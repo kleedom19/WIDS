@@ -1,0 +1,10 @@
+signal_type,value
+total_incidents,62696.0
+incidents_with_evacuations,2419.0
+evacuation_rate_%,3.86
+fire_size_mean_evac_acres,1471.2
+fire_size_median_evac_acres,10.0
+fire_size_mean_no_evac_acres,243.4
+fire_size_median_no_evac_acres,0.9
+num_keywords_analyzed,77.0
+num_predictive_keywords_found,36.0

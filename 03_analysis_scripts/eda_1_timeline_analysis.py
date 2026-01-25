@@ -34,23 +34,23 @@ print("="*80)
 print("\n1️⃣ Loading data files...")
 
 # Main incident records
-geo_events = pd.read_csv('geo_events_geoevent.csv')
+geo_events = pd.read_csv('01_raw_data/geo_events_geoevent.csv')
 print(f"   ✓ Loaded {len(geo_events):,} geo events")
 
 # Incident change logs
-geo_event_changelog = pd.read_csv('geo_events_geoeventchangelog.csv')
+geo_event_changelog = pd.read_csv('01_raw_data/geo_events_geoeventchangelog.csv')
 print(f"   ✓ Loaded {len(geo_event_changelog):,} event changes")
 
 # Zone-to-fire mappings
-zone_event_map = pd.read_csv('evac_zone_status_geo_event_map.csv')
+zone_event_map = pd.read_csv('01_raw_data/evac_zone_status_geo_event_map.csv')
 print(f"   ✓ Loaded {len(zone_event_map):,} zone-event mappings")
 
 # Fire perimeters
-fire_perimeters = pd.read_csv('fire_perimeters_gis_fireperimeter.csv')
+fire_perimeters = pd.read_csv('01_raw_data/fire_perimeters_gis_fireperimeter.csv')
 print(f"   ✓ Loaded {len(fire_perimeters):,} fire perimeters")
 
 # Evacuation zones (for current status)
-evac_zones = pd.read_csv('evac_zones_gis_evaczone.csv')
+evac_zones = pd.read_csv('01_raw_data/evac_zones_gis_evaczone.csv')
 print(f"   ✓ Loaded {len(evac_zones):,} evacuation zones")
 
 # ============================================================================

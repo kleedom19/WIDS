@@ -1,0 +1,70 @@
+# WiDS Datathon - Git Ignore File
+# Exclude large files that exceed GitHub limits
+
+# ============================================
+# Large Cleaned Data Files (>100MB)
+# ============================================
+# These cleaned files are too large for GitHub
+# Keep them locally, regenerate with clean_all_data.py
+
+01_raw_data/cleaned/external_events_clean.csv
+01_raw_data/cleaned/fire_perimeters_clean.csv
+01_raw_data/cleaned/evac_zones_clean.csv
+01_raw_data/cleaned/geo_events_clean.csv
+01_raw_data/cleaned/external_changelog_clean.csv
+
+# Alternatively, ignore entire cleaned folder
+# 01_raw_data/cleaned/
+
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# ============================================
+# Jupyter Notebooks
+# ============================================
+.ipynb_checkpoints/
+*.ipynb
+
+# ============================================
+# IDEs
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================
+# OS Files
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ============================================
+# Temporary Files
+# ============================================
+*.tmp
+*.log
+*.bak
+*.backup
+
+# ============================================
+# Data (if needed)
+# ============================================
+# Uncomment to exclude all data
+# *.csv
+# *.xlsx
