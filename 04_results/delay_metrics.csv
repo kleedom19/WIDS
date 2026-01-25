@@ -1,0 +1,8 @@
+metric,value
+fire_to_zone_mean_hours,67.29204922014077
+fire_to_zone_median_hours,11.456208436944445
+fire_to_zone_90th_percentile_hours,188.20396702550002
+fire_to_first_change_mean_hours,14.328152057692602
+total_incidents,62696.0
+incidents_with_evacuations,2419.0
+total_zones_linked,4383.0
