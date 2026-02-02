@@ -1,31 +1,39 @@
 """
-evacuation_planner_page.py  —  v3  (full rewrite)
+evacuation_planner_page.py  —  v4
 
-Fixes applied
-─────────────
-1  Walking route was showing identical numbers to driving — now routed
-   separately via OSRM /foot/ and displayed correctly.
-2  Safe-zone destinations are now SPECIFIC shelter / facility addresses
-   (Red Cross, county emergency shelters, hospitals) not just city centres.
-3  Transit card shows walk-to-nearest-stop distance + Uber/Lyft estimate
-   so the user knows how to actually board.
-4  Road-closure advisory banner (sourced from 511) rendered every time.
-5  Multimodal comparison: drive, walk, transit, drive-then-transit all
-   shown side by side with a single ETA each — mirrors Google Maps style.
-6  Vulnerable-population shelters (ADA-accessible, elderly-friendly,
-   medical-capable) called out as a separate recommended layer.
-7  Map draws every polyline that was calculated, pins the specific
-   shelter address, and colour-codes by mode.
+Changes from v3
+───────────────
+1  Google Maps / Apple Maps links fully removed.  Turn-by-turn comes from
+   OSRM only; the interactive map (Folium / Leaflet + OSM tiles) is the
+   single source of navigation.
+2  Road-Closure Advisory section now fetches LIVE incident data:
+     • NC  → NC DOT TIMS REST API  (no key required)
+     • Other states → state-specific open feeds where available, with a
+       clean fallback advisory block.
+3  Shelter discovery is now TWO-LAYER:
+     a) Live query to the OpenStreetMap Overpass API pulls shelters,
+        social-facilities, and hospitals within a radius of the destination.
+     b) Curated static fallback data is merged in so the user always sees
+        categorised options even if Overpass is slow/down.
+   Categories surfaced:
+     General  |  Women / DV  |  Elderly  |  Disabled / ADA  |
+     Mental-Health  |  Veterans  |  Families w/ Children  |  Pet-Friendly
+4  Emoji pass: decorative emoji stripped.  Single-purpose icons kept where
+   they aid scannability (warning triangle, map pin).  No emoji clusters.
+5  Directions section rewritten: shows OSRM turn-by-turn inline; no
+   external map-service links anywhere.
 """
 
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import requests
+import json
 from typing import Dict, List, Optional, Tuple
 from math import radians, cos, sin, asin, sqrt
+from datetime import datetime
 
-# ── imports ──────────────────────────────────────────────────────────
+# ── local imports ────────────────────────────────────────────────────
 try:
     from us_cities_database import US_CITIES, get_city_coordinates
     CITY_DB_AVAILABLE = True
@@ -40,17 +48,14 @@ except Exception:
     TRANSIT_DB_AVAILABLE = False
 
 
-# ── tiny formatter ───────────────────────────────────────────────────
+# ── helpers ──────────────────────────────────────────────────────────
 def _fmt(minutes: float) -> str:
-    """e.g. 99 → '1 hr 39 min'"""
+    """99 → '1 hr 39 min'"""
     minutes = int(round(minutes))
     h, m = divmod(minutes, 60)
-    if h:
-        return f"{h} hr {m} min"
-    return f"{m} min"
+    return f"{h} hr {m} min" if h else f"{m} min"
 
 
-# ── helpers ──────────────────────────────────────────────────────────
 def _haversine(lat1, lon1, lat2, lon2) -> float:
     """Miles between two lat/lon points."""
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
@@ -59,8 +64,9 @@ def _haversine(lat1, lon1, lat2, lon2) -> float:
     return 3956 * 2 * asin(sqrt(a))
 
 
+# ── geocoding ────────────────────────────────────────────────────────
 def geocode_address(address: str) -> Optional[Tuple[float, float]]:
-    """City DB first, then Nominatim fallback."""
+    """City DB first, then Nominatim (OSM) fallback.  No Google."""
     if CITY_DB_AVAILABLE:
         coords = get_city_coordinates(address.lower().strip())
         if coords:
@@ -80,10 +86,11 @@ def geocode_address(address: str) -> Optional[Tuple[float, float]]:
     return None
 
 
+# ── OSRM routing ─────────────────────────────────────────────────────
 def osrm_route(origin_lat, origin_lon, dest_lat, dest_lon, profile="car") -> Optional[Dict]:
     """
-    Call OSRM.  profile = car | foot | bicycle
-    Returns dict with distance_mi, duration_min, duration_hours, geometry, steps  – or None.
+    OSRM open-source router.  profile = car | foot | bicycle.
+    Returns distance_mi, duration_min, geometry, steps  —  or None.
     """
     url = (
         f"http://router.project-osrm.org/route/v1/{profile}/"
@@ -107,7 +114,6 @@ def osrm_route(origin_lat, origin_lon, dest_lat, dest_lon, profile="car") -> Opt
         return {
             "distance_mi": round(route["distance"] * 0.000621371, 1),
             "duration_min": round(route["duration"] / 60, 1),
-            "duration_hours": round(route["duration"] / 3600, 2),
             "geometry": route["geometry"]["coordinates"],
             "steps": steps,
         }
@@ -115,219 +121,286 @@ def osrm_route(origin_lat, origin_lon, dest_lat, dest_lon, profile="car") -> Opt
         return None
 
 
-# ── shelter / facility database ──────────────────────────────────────
-SHELTERS: Dict[str, List[Dict]] = {
-    "charlotte": [
-        {"name": "Salvation Army Charlotte",
-         "address": "510 Providence Rd, Charlotte, NC 28203",
-         "lat": 35.2120, "lon": -80.8450,
-         "type": "General / Vulnerable", "ada": True,
-         "capacity_note": "Up to 200 people", "phone": "704-333-2623",
-         "vulnerable_friendly": True,
-         "why": "Closest major Red-Cross-affiliated shelter to Charlotte centre; ADA-accessible, medical staff on-site during declared emergencies."},
-        {"name": "Mecklenburg County Emergency Shelter",
-         "address": "2425 W T Harris Blvd, Charlotte, NC 28208",
-         "lat": 35.2230, "lon": -80.8860,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 500 people", "phone": "704-336-2160",
-         "vulnerable_friendly": False,
-         "why": "County-run primary overflow shelter; largest capacity in metro."},
-    ],
-    "winston-salem": [
-        {"name": "Salvation Army Winston-Salem",
-         "address": "1144 N Trade St, Winston-Salem, NC 27101",
-         "lat": 36.1050, "lon": -80.2580,
-         "type": "General / Vulnerable", "ada": True,
-         "capacity_note": "Up to 150 people", "phone": "336-722-5624",
-         "vulnerable_friendly": True,
-         "why": "ADA-accessible with on-call medical support; Forsyth County designates this as a primary vulnerable-population shelter."},
-    ],
-    "raleigh": [
-        {"name": "Wake County Emergency Shelter (NC State Fairgrounds)",
-         "address": "1207 Hillsborough St, Raleigh, NC 27604",
-         "lat": 35.7880, "lon": -78.6400,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 1000 people", "phone": "919-856-4000",
-         "vulnerable_friendly": False,
-         "why": "Largest shelter capacity in the Triangle; open whenever Wake County declares an emergency."},
-        {"name": "Raleigh Salvation Army",
-         "address": "222 S Blount St, Raleigh, NC 27601",
-         "lat": 35.7710, "lon": -78.6380,
-         "type": "Vulnerable", "ada": True,
-         "capacity_note": "Up to 100 people", "phone": "919-834-2648",
-         "vulnerable_friendly": True,
-         "why": "Designated vulnerable-population site; trained staff for elderly / disabled / medical-need evacuees."},
-    ],
-    "durham": [
-        {"name": "Durham County Emergency Shelter",
-         "address": "300 E Pettigrew St, Durham, NC 27702",
-         "lat": 35.9780, "lon": -78.9010,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 400 people", "phone": "919-560-0300",
-         "vulnerable_friendly": False,
-         "why": "Primary county emergency site; opened automatically when evacuation order is issued."},
-    ],
-    "greensboro": [
-        {"name": "Salvation Army Greensboro",
-         "address": "1303 Cone Blvd, Greensboro, NC 27409",
-         "lat": 36.0850, "lon": -79.8270,
-         "type": "General / Vulnerable", "ada": True,
-         "capacity_note": "Up to 120 people", "phone": "336-275-4315",
-         "vulnerable_friendly": True,
-         "why": "Guilford County-designated vulnerable shelter; wheelchair-accessible throughout."},
-    ],
-    "miami": [
-        {"name": "Miami-Dade County Emergency Shelter",
-         "address": "7490 NW 7th Ave, Miami, FL 33147",
-         "lat": 25.8570, "lon": -80.2180,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 2000 people", "phone": "305-468-5400",
-         "vulnerable_friendly": False,
-         "why": "Largest county-run evacuation shelter; activated for all hurricane / fire evacuations."},
-        {"name": "Salvation Army Miami",
-         "address": "1400 NW 10th Ave, Miami, FL 33136",
-         "lat": 25.7900, "lon": -80.2050,
-         "type": "Vulnerable", "ada": True,
-         "capacity_note": "Up to 300 people", "phone": "305-326-0026",
-         "vulnerable_friendly": True,
-         "why": "Designated vulnerable / special-needs shelter with medical support and translators."},
-    ],
-    "houston": [
-        {"name": "George R. Brown Convention Center",
-         "address": "1000 Polk St, Houston, TX 77002",
-         "lat": 29.7530, "lon": -95.3570,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 10000 people", "phone": "713-794-9000",
-         "vulnerable_friendly": False,
-         "why": "Harris County's primary mega-shelter; opened for Hurricane Harvey and major evacuations."},
-        {"name": "Salvation Army Houston",
-         "address": "1001 Bellaire Blvd, Houston, TX 77054",
-         "lat": 29.6980, "lon": -95.4080,
-         "type": "Vulnerable", "ada": True,
-         "capacity_note": "Up to 200 people", "phone": "713-227-2932",
-         "vulnerable_friendly": True,
-         "why": "Elderly / disabled / medical-need shelter with 24-hr nursing care during emergencies."},
-    ],
-    "los angeles": [
-        {"name": "Los Angeles County Fairgrounds Shelter",
-         "address": "1101 W Mission Blvd, Pomona, CA 91789",
-         "lat": 34.0700, "lon": -117.7480,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 3000 people", "phone": "213-816-0000",
-         "vulnerable_friendly": False,
-         "why": "LA County's largest evacuation shelter site; routinely activated during wildfires."},
-        {"name": "Salvation Army Los Angeles",
-         "address": "1340 S Hope St, Los Angeles, CA 90015",
-         "lat": 34.0420, "lon": -118.2800,
-         "type": "Vulnerable", "ada": True,
-         "capacity_note": "Up to 250 people", "phone": "213-362-0050",
-         "vulnerable_friendly": True,
-         "why": "Designated vulnerable-population shelter with medical staff and multilingual support."},
-    ],
-    "dallas": [
-        {"name": "Dallas Convention Center Shelter",
-         "address": "650 Akard St, Dallas, TX 75201",
-         "lat": 32.7880, "lon": -96.7980,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 5000 people", "phone": "214-670-6000",
-         "vulnerable_friendly": False,
-         "why": "Primary city-run mega-shelter; activated for severe weather and wildfire evacuations."},
-    ],
-    "atlanta": [
-        {"name": "Georgia World Congress Center",
-         "address": "285 Spring St NW, Atlanta, GA 30303",
-         "lat": 33.7530, "lon": -84.4010,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 5000 people", "phone": "404-223-4700",
-         "vulnerable_friendly": False,
-         "why": "Fulton County's primary mass-evacuation shelter; ADA-compliant throughout."},
-        {"name": "Salvation Army Atlanta",
-         "address": "1214 Spring St NW, Atlanta, GA 30309",
-         "lat": 33.7800, "lon": -84.3960,
-         "type": "Vulnerable", "ada": True,
-         "capacity_note": "Up to 150 people", "phone": "404-855-4750",
-         "vulnerable_friendly": True,
-         "why": "Vulnerable-population designated shelter; on-call medical and social-work staff."},
-    ],
-    "chicago": [
-        {"name": "Chicago McCormick Place Shelter",
-         "address": "2301 S Lake Shore Dr, Chicago, IL 60616",
-         "lat": 41.8440, "lon": -87.6180,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 8000 people", "phone": "312-326-0000",
-         "vulnerable_friendly": False,
-         "why": "City's largest emergency shelter facility; activated for major evacuation events."},
-    ],
-    "new york": [
-        {"name": "Jacob Javits Center Shelter",
-         "address": "429 11th Ave, New York, NY 10001",
-         "lat": 40.7580, "lon": -74.0000,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 10000 people", "phone": "212-216-2000",
-         "vulnerable_friendly": False,
-         "why": "NYC's primary mass-casualty and evacuation shelter; activated for hurricanes and major emergencies."},
-        {"name": "Salvation Army New York",
-         "address": "120 W 15th St, New York, NY 10011",
-         "lat": 40.7380, "lon": -73.9960,
-         "type": "Vulnerable", "ada": True,
-         "capacity_note": "Up to 200 people", "phone": "212-366-9896",
-         "vulnerable_friendly": True,
-         "why": "Designated vulnerable / special-needs shelter with interpreters and medical support."},
-    ],
-    "seattle": [
-        {"name": "Seattle Center Shelter",
-         "address": "401 Mercer St, Seattle, WA 98109",
-         "lat": 47.6210, "lon": -122.3540,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 2000 people", "phone": "206-684-0000",
-         "vulnerable_friendly": False,
-         "why": "King County primary evacuation site; fully ADA-accessible."},
-    ],
-    "denver": [
-        {"name": "Denver Convention Center Shelter",
-         "address": "700 E Colfax Ave, Denver, CO 80203",
-         "lat": 39.7420, "lon": -104.9780,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 3000 people", "phone": "303-595-8000",
-         "vulnerable_friendly": False,
-         "why": "Denver's go-to emergency shelter for wildfire evacuations; largest capacity in metro."},
-    ],
-    "phoenix": [
-        {"name": "Phoenix Convention Center Shelter",
-         "address": "111 N 10th St, Phoenix, AZ 85004",
-         "lat": 33.4480, "lon": -112.0750,
-         "type": "General", "ada": True,
-         "capacity_note": "Up to 4000 people", "phone": "602-262-6100",
-         "vulnerable_friendly": False,
-         "why": "Maricopa County primary evacuation centre; routinely used for wildfire evacuations."},
-    ],
+# ── LIVE road-condition fetchers ─────────────────────────────────────
+
+# NC county name → TIMS county-id  (partial list; expand as needed)
+NC_COUNTY_IDS: Dict[str, int] = {
+    "mecklenburg": 56, "cabarrus": 13, "union": 83, "gaston": 37,
+    "iredell": 45, "cabarrus": 13, "davidson": 26, "guilford": 41,
+    "wake": 81, "forsyth": 38, "durham": 28, "alamance": 1,
+    "Johnston": 46, "lee": 53, "moore": 65, "chatham": 18,
+    "orange": 68, "buncombe": 9, "pitt": 71, "Cumberland": 23,
 }
 
 
-def get_shelters_for_city(city_name: str, city_lat: float, city_lon: float) -> List[Dict]:
-    """Return shelter list; falls back to a generated generic entry."""
-    key = city_name.lower().strip().split(",")[0].strip()
-    if key in SHELTERS:
-        return SHELTERS[key]
-    return [
-        {
-            "name": f"{city_name.strip().title()} Area Emergency Shelter",
-            "address": f"Contact {city_name.strip().title()} Emergency Management — call 211",
-            "lat": city_lat, "lon": city_lon,
-            "type": "General", "ada": True,
-            "capacity_note": "Varies — call ahead",
-            "phone": "211",
-            "vulnerable_friendly": False,
-            "why": (
-                f"Default county emergency shelter for {city_name.strip().title()}. "
-                "Call 211 or visit your county emergency-management website for the "
-                "exact open shelter address during an active evacuation."
-            ),
-        }
-    ]
+@st.cache_data(ttl=120)                        # refresh every 2 min
+def fetch_ncdot_incidents(county_name: str) -> List[Dict]:
+    """
+    Pull live incidents from NC DOT TIMS REST API.
+    Endpoint requires no API key.
+    Returns list of incident dicts or empty list on failure.
+    """
+    cid = NC_COUNTY_IDS.get(county_name.lower().strip())
+    if cid is None:
+        return []
+    url = f"https://eapps.ncdot.gov/services/traffic-prod/v1/counties/{cid}/incidents"
+    try:
+        r = requests.get(url, headers={"User-Agent": "WiDS-Caregiver-Alert/1.0"}, timeout=10)
+        if r.status_code == 200:
+            return r.json() if isinstance(r.json(), list) else []
+    except Exception:
+        pass
+    return []
 
 
-# ── transit-stop proximity ───────────────────────────────────────────
+# Map state abbreviation → known open incident-feed URL (no key).
+# Only states that publish truly open REST feeds are listed; others
+# get the generic advisory block.
+STATE_OPEN_FEEDS: Dict[str, str] = {
+    # NC handled separately via TIMS above
+    # Add more as they become available
+}
+
+
+def _extract_state_abbr(address: str) -> Optional[str]:
+    """Best-effort pull of 2-letter state code from free-text address."""
+    parts = [p.strip().upper() for p in address.replace(",", " ").split()]
+    US_STATES = {
+        "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL",
+        "IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT",
+        "NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI",
+        "SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC",
+    }
+    for p in reversed(parts):          # state abbr usually at the end
+        if p in US_STATES:
+            return p
+    return None
+
+
+def _extract_nc_county(address: str) -> Optional[str]:
+    """Try to guess county from city name for NC DOT lookups."""
+    city_to_county = {
+        "charlotte": "mecklenburg", "matthews": "mecklenburg",
+        "mint hill": "mecklenburg", "huntersville": "mecklenburg",
+        "concord": "cabarrus", "kannapolis": "cabarrus",
+        "monroe": "union", "indian trail": "union",
+        "gastonia": "gaston", "cherryville": "gaston",
+        "statesville": "iredell", "mooresville": "iredell",
+        "davidson": "davidson", "davidson": "davidson",
+        "greensboro": "guilford", "high point": "guilford",
+        "raleigh": "wake", "cary": "wake", "apex": "wake",
+        "winston-salem": "forsyth", "kernersville": "forsyth",
+        "durham": "durham",
+        "asheville": "buncombe",
+    }
+    city = address.lower().strip().split(",")[0].strip()
+    return city_to_county.get(city)
+
+
+# ── LIVE shelter discovery via OpenStreetMap Overpass API ────────────
+
+OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://api.letsopen.de/api/interpreter",
+]
+
+# OSM tag → friendly category label
+_TAG_CATEGORY_MAP = {
+    # social_facility values
+    "dv_shelter":          "Women / Domestic-Violence",
+    "elderly_care":        "Elderly",
+    "disabled":            "Disabled / ADA",
+    "mental_health":       "Mental Health",
+    "housing_emergency":   "General Emergency",
+    "food_bank":           "Food / Supply Distribution",
+    "group_home":          "Group Home",
+    # amenity values
+    "shelter":             "General",
+    "social_centre":       "Social Centre",
+    # custom / inferred
+    "hospital":            "Hospital / Medical",
+    "veterinary":          "Pet-Friendly (Veterinary)",
+}
+
+# Curated static shelters used as a reliable baseline when Overpass is
+# slow or returns sparse data.  Organised by CATEGORY so the UI can
+# always show every filter option.
+STATIC_SHELTER_DB: Dict[str, List[Dict]] = {
+    "General": [
+        {"name": "Red Cross Shelter (local chapter)",
+         "address": "Contact local Red Cross — 1-800-RED-CROSS",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "1-800-733-2767", "ada": True,
+         "note": "Red Cross operates temporary shelters within 24 h of a declared emergency.  Call to confirm nearest open location."},
+        {"name": "FEMA / County Emergency Shelter",
+         "address": "Contact county emergency management or dial 211",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "211", "ada": True,
+         "note": "County-run shelters open automatically when an evacuation order is issued.  211 connects to local emergency services nationwide."},
+    ],
+    "Women / Domestic-Violence": [
+        {"name": "National DV Hotline — Shelter Referral",
+         "address": "Referral only — call or text for nearest shelter",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "1-800-799-7233", "ada": True,
+         "note": "The National Domestic Violence Hotline can connect you to the nearest safe, confidential shelter.  Text START to 88788."},
+    ],
+    "Elderly": [
+        {"name": "Area Agency on Aging — Emergency Placement",
+         "address": "Contact your local AAA for nearest elder shelter",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "eldercare.acl.gov — 1-800-677-1116", "ada": True,
+         "note": "The Eldercare Locator (federal) links to local Area Agencies on Aging who coordinate emergency placement for seniors."},
+    ],
+    "Disabled / ADA": [
+        {"name": "ADA / Disability-Specific Shelter Referral",
+         "address": "Contact local emergency management",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "211", "ada": True,
+         "note": "Most county emergency shelters are ADA-compliant.  Call 211 and specify mobility / accessibility needs — they can match you to the right facility."},
+    ],
+    "Mental Health": [
+        {"name": "988 Suicide & Crisis Lifeline — Shelter Referral",
+         "address": "Call or text 988 for crisis support + shelter help",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "988", "ada": True,
+         "note": "988 counsellors can arrange crisis-safe shelter placement and coordinate with local mental-health agencies during emergencies."},
+    ],
+    "Veterans": [
+        {"name": "VA Emergency / Homeless Veteran Services",
+         "address": "Contact nearest VA Medical Center",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "1-800-273-8255 (Veterans Crisis Line)", "ada": True,
+         "note": "The VA operates emergency shelters for veterans through its Homeless Veteran programmes.  The Veterans Crisis Line also helps locate shelter."},
+    ],
+    "Families w/ Children": [
+        {"name": "211 Family-Shelter Referral",
+         "address": "Dial 211 and request family shelter",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "211", "ada": True,
+         "note": "Many emergency shelters have dedicated family wings with cots, meals, and childcare.  211 can confirm which facilities are open and have family capacity."},
+    ],
+    "Pet-Friendly": [
+        {"name": "ASPCA / Local Animal Rescue — Pet-Friendly Shelter Info",
+         "address": "Contact local animal rescue or dial 211",
+         "lat_offset": 0.0, "lon_offset": 0.0,
+         "phone": "211", "ada": False,
+         "note": "Not all emergency shelters accept pets.  211 and local animal rescues maintain up-to-date lists of pet-friendly evacuation sites.  Bring carriers, food, and records."},
+    ],
+}
+
+# All shelter categories in display order
+SHELTER_CATEGORIES = [
+    "General",
+    "Women / Domestic-Violence",
+    "Elderly",
+    "Disabled / ADA",
+    "Mental Health",
+    "Veterans",
+    "Families w/ Children",
+    "Pet-Friendly",
+    "Hospital / Medical",
+]
+
+
+@st.cache_data(ttl=300)
+def fetch_overpass_shelters(dest_lat: float, dest_lon: float, radius_m: int = 15000) -> List[Dict]:
+    """
+    Query Overpass API for shelters + social facilities near destination.
+    Returns normalised list of dicts: name, lat, lon, category, phone, ada, note.
+    """
+    # Overpass QL: fetch amenity=shelter, social_facility=*, amenity=hospital
+    # within a circular area around the destination.
+    query = f"""
+    [out:json][timeout:10];
+    (
+      node["amenity"="shelter"](around:{radius_m},{dest_lat},{dest_lon});
+      node["social_facility"](around:{radius_m},{dest_lat},{dest_lon});
+      node["amenity"="hospital"](around:{radius_m},{dest_lat},{dest_lon});
+      way["amenity"="shelter"](around:{radius_m},{dest_lat},{dest_lon});
+      way["social_facility"](around:{radius_m},{dest_lat},{dest_lon});
+    );
+    out center;
+    """
+    for endpoint in OVERPASS_ENDPOINTS:
+        try:
+            r = requests.post(endpoint, data={"data": query},
+                              headers={"User-Agent": "WiDS-Caregiver-Alert/1.0"},
+                              timeout=12)
+            if r.status_code != 200:
+                continue
+            raw = r.json()
+            results = []
+            for elem in raw.get("elements", []):
+                tags = elem.get("tags", {})
+                name = tags.get("name", "").strip()
+                if not name:
+                    continue
+
+                # Resolve coordinates (nodes have lat/lon; ways have center)
+                lat = elem.get("lat") or (elem.get("center") or {}).get("lat")
+                lon = elem.get("lon") or (elem.get("center") or {}).get("lon")
+                if lat is None or lon is None:
+                    continue
+
+                # Determine category
+                sf = tags.get("social_facility", "")
+                amenity = tags.get("amenity", "")
+                category = _TAG_CATEGORY_MAP.get(sf) or _TAG_CATEGORY_MAP.get(amenity) or "General"
+
+                phone = tags.get("phone", "").strip() or "N/A"
+                ada = tags.get("wheelchair", "yes") != "no"
+                website = tags.get("website", "").strip()
+
+                results.append({
+                    "name": name,
+                    "lat": lat,
+                    "lon": lon,
+                    "category": category,
+                    "phone": phone,
+                    "ada": ada,
+                    "website": website,
+                    "source": "OpenStreetMap",
+                })
+            return results
+        except Exception:
+            continue
+    return []  # all endpoints failed
+
+
+def _merge_shelters(live: List[Dict], dest_lat: float, dest_lon: float) -> Dict[str, List[Dict]]:
+    """
+    Merge live Overpass results with static baseline so every category
+    is represented.  Returns {category: [shelter_dict, …]}.
+    """
+    merged: Dict[str, List[Dict]] = {cat: [] for cat in SHELTER_CATEGORIES}
+
+    # 1) Live results first
+    for s in live:
+        cat = s.get("category", "General")
+        if cat not in merged:
+            merged.setdefault(cat, [])
+        merged[cat].append(s)
+
+    # 2) For every category that is still empty, inject the static entries
+    #    (adjust lat/lon to be near destination so map pins cluster logically)
+    for cat, statics in STATIC_SHELTER_DB.items():
+        if not merged.get(cat):
+            for s in statics:
+                merged.setdefault(cat, []).append({
+                    "name": s["name"],
+                    "lat": dest_lat + s.get("lat_offset", 0),
+                    "lon": dest_lon + s.get("lon_offset", 0),
+                    "category": cat,
+                    "phone": s["phone"],
+                    "ada": s["ada"],
+                    "note": s["note"],
+                    "source": "Curated",
+                })
+    return merged
+
+
+# ── transit helpers ──────────────────────────────────────────────────
 TRANSIT_WALK_MINS: Dict[str, int] = {
     "new york": 5, "chicago": 8, "los angeles": 12, "houston": 15,
     "phoenix": 18, "philadelphia": 10, "san antonio": 20, "san diego": 14,
@@ -337,20 +410,21 @@ TRANSIT_WALK_MINS: Dict[str, int] = {
     "portland": 10, "miami": 12, "atlanta": 11, "detroit": 16,
     "minneapolis": 10, "tampa": 22, "orlando": 25, "pittsburgh": 14,
     "cleveland": 13, "raleigh": 18, "new orleans": 15, "baltimore": 11,
-    "milwaukee": 16, "st louis": 14, "memphis": 22, "louisville": 20,
 }
 
 def _nearest_stop_walk(city_name: str) -> int:
     return TRANSIT_WALK_MINS.get(city_name.lower().strip().split(",")[0].strip(), 15)
 
 
-# ── page renderer ────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+# MAIN PAGE RENDERER
+# ══════════════════════════════════════════════════════════════════════
 def render_evacuation_planner_page(fire_data, vulnerable_populations):
-    """Main entry point called by the multi-page dashboard."""
+    """Entry point called by the multi-page dashboard."""
 
-    st.title("🚗 Personal Evacuation Planner")
+    st.title("Personal Evacuation Planner")
     st.markdown(
-        "Get personalized evacuation routes — driving, walking, and public transit — "
+        "Get personalised evacuation routes — driving, walking, and public transit — "
         "with specific shelter addresses for both the general public and vulnerable populations."
     )
 
@@ -366,8 +440,8 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
         st.session_state.setdefault(key, default)
 
     # ── address input ────────────────────────────────────────────────
-    st.subheader("📍 Your Location")
-    st.info("💡 **500+ US cities, all 50 states.** Type your city name — e.g. *Charlotte, NC* or *Miami*.")
+    st.subheader("Your Location")
+    st.info("500+ US cities, all 50 states.  Type your city name — e.g. Charlotte, NC or Miami.")
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -378,7 +452,7 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
             key="address_input",
         )
     with col2:
-        search_button = st.button("🔍 Find Route", type="primary")
+        search_button = st.button("Find Route", type="primary")
 
     if search_button and address:
         st.session_state.search_triggered = True
@@ -387,37 +461,37 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
         st.session_state.dynamic_safe_zones = None
         st.session_state.cached_routes = {}
 
-    # ── nothing to show yet ──────────────────────────────────────────
+    # ── landing state ────────────────────────────────────────────────
     if not st.session_state.search_triggered:
-        st.info("👆 Enter your city above to get personalized evacuation routes")
+        st.info("Enter your city above to get personalised evacuation routes.")
         st.markdown("---")
-        st.subheader("ℹ️ How It Works")
-        st.markdown("""
-        1. **Enter your city** — we geocode it instantly from a 500+ city DB.
-        2. **Nearby fires** — satellite detections within 100 mi are shown.
-        3. **Safe-zone shelters** — specific addresses (ADA / vulnerable-friendly flagged).
-        4. **Multimodal routes** — driving, walking, transit, and drive-to-transit all compared.
-        5. **Interactive map** — every route drawn; shelter pins clickable.
-        6. **Road-closure advisory** — always displayed so you know before you go.
-        """)
+        st.subheader("How It Works")
+        st.markdown(
+            "1. **Enter your city** — geocoded instantly from a 500+ city database.\n"
+            "2. **Nearby fires** — satellite detections within 100 mi are shown.\n"
+            "3. **Safe-zone shelters** — specific addresses, categorised by population need.\n"
+            "4. **Multimodal routes** — driving, walking, transit, and drive-to-transit compared.\n"
+            "5. **Interactive map** — every route drawn; shelter pins clickable.\n"
+            "6. **Road-condition advisory** — live incident data displayed before you go."
+        )
         return
 
     # ── geocode ──────────────────────────────────────────────────────
     if st.session_state.search_coords is None:
-        with st.spinner("🗺️ Finding your location…"):
+        with st.spinner("Finding your location…"):
             st.session_state.search_coords = geocode_address(st.session_state.search_address)
 
     coords = st.session_state.search_coords
     if coords is None:
-        st.error("❌ City not found. Try the city name alone or with state abbreviation.")
+        st.error("City not found.  Try the city name alone or with the state abbreviation.")
         return
 
     origin_lat, origin_lon = coords
-    st.success(f"📍 Location locked: **{st.session_state.search_address.strip().title()}** ({origin_lat:.4f}, {origin_lon:.4f})")
+    st.success(f"Location locked: **{st.session_state.search_address.strip().title()}** ({origin_lat:.4f}, {origin_lon:.4f})")
 
-    # ── dynamic safe zones ───────────────────────────────────────────
+    # ── safe zones ───────────────────────────────────────────────────
     if st.session_state.dynamic_safe_zones is None:
-        with st.spinner("🗺️ Finding nearby safe zones…"):
+        with st.spinner("Finding nearby safe zones…"):
             st.session_state.dynamic_safe_zones = get_dynamic_safe_zones(
                 origin_lat, origin_lon, fire_data=fire_data,
                 min_distance_mi=30, max_distance_mi=600, num_zones=10,
@@ -425,7 +499,7 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
     safe_zone_list: List[Dict] = st.session_state.dynamic_safe_zones or []
 
     # ── fire threats ─────────────────────────────────────────────────
-    st.subheader("🔥 Nearby Fire Threats")
+    st.subheader("Nearby Fire Threats")
     nearest_fires: List[Dict] = []
     if fire_data is not None and len(fire_data) > 0:
         for _, fire in fire_data.iterrows():
@@ -443,59 +517,65 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
     nearest_fires.sort(key=lambda x: x["distance"])
 
     if nearest_fires:
-        st.warning(f"⚠️ {len(nearest_fires)} fire(s) detected within 100 miles")
+        st.warning(f"{len(nearest_fires)} fire(s) detected within 100 miles")
         for f in nearest_fires[:5]:
-            badge = "🔴 HIGH" if f["distance"] < 15 else ("🟡 MEDIUM" if f["distance"] < 40 else "🟢 LOW")
+            badge = "HIGH" if f["distance"] < 15 else ("MEDIUM" if f["distance"] < 40 else "LOW")
             acres_str = f"{f['acres']:,.0f} acres" if f["acres"] else "size unknown"
-            st.write(f"{badge} — **{f['name']}**: {f['distance']} mi away  ({acres_str})")
+            st.write(f"[{badge}]  {f['name']}  —  {f['distance']} mi away  ({acres_str})")
     else:
-        st.success("✅ No fires within 100 miles of your location")
+        st.success("No fires within 100 miles of your location.")
 
-    # ── 🚧 road-closure advisory ─────────────────────────────────────
+    # ── LIVE road-closure advisory ───────────────────────────────────
     st.markdown("---")
-    st.subheader("🚧 Road-Closure Advisory")
+    st.subheader("Road-Condition Advisory")
     st.warning(
         "**Always check road conditions before driving.**  "
-        "During wildfires, highways are closed without notice.  "
-        "If you cannot access the links below, tune to local AM/FM emergency broadcasts or call **511**."
+        "During wildfires, highways may close without notice.  "
+        "If live data is unavailable, tune to local AM/FM emergency broadcasts or call **511**."
     )
-    # state-specific 511 links
-    STATE_511 = {
-        "nc": ("🏎️ [NC DOT Road Conditions](https://www.ncdot.gov/travel-information/road-conditions)",  "North Carolina"),
-        "ca": ("🏎️ [Caltrans Road Conditions](https://www.caltrans.ca.gov/travel-and-transport/road-conditions)", "California"),
-        "tx": ("🏎️ [TxDOT Road Conditions](https://www.txdot.gov/travel-info.html)", "Texas"),
-        "fl": ("🏎️ [FDOT Road Conditions](https://www.511.org)", "Florida"),
-        "az": ("🏎️ [ADOT Road Conditions](https://www.azgovernment.gov/)", "Arizona"),
-        "ga": ("🏎️ [GDOT Road Conditions](https://www.511.org)", "Georgia"),
-        "wa": ("🏎️ [WSDOT Road Conditions](https://www.wsdot.com/)", "Washington"),
-        "co": ("🏎️ [CDOT Road Conditions](https://www.cotrip.org/)", "Colorado"),
-        "or": ("🏎️ [ODOT Road Conditions](https://www.oregon.gov/odot)", "Oregon"),
-        "il": ("🏎️ [IDOT Road Conditions](https://www.illinoisservice.org/)", "Illinois"),
-    }
-    addr_upper = st.session_state.search_address.upper()
-    state_match = None
-    for abbr in STATE_511:
-        if abbr.upper() in addr_upper:
-            state_match = abbr
-            break
-    if state_match:
-        link, state_name = STATE_511[state_match]
-        st.markdown(link)
-    st.markdown("🌐 [National 511 Portal](https://www.511.org)")
+
+    state_abbr = _extract_state_abbr(st.session_state.search_address)
+
+    if state_abbr == "NC":
+        county_guess = _extract_nc_county(st.session_state.search_address)
+        if county_guess:
+            with st.spinner("Fetching live NC DOT incidents…"):
+                incidents = fetch_ncdot_incidents(county_guess)
+            if incidents:
+                st.markdown(f"**Live incidents — {county_guess.title()} County**  *(source: NC DOT TIMS, updated {datetime.now().strftime('%H:%M')})*")
+                for inc in incidents[:12]:
+                    # TIMS returns dicts; field names vary — handle both styles
+                    title   = inc.get("title") or inc.get("Title") or inc.get("description") or inc.get("Description") or "Incident"
+                    road    = inc.get("road") or inc.get("Road") or inc.get("roadway") or inc.get("Roadway") or ""
+                    severity= inc.get("severity") or inc.get("Severity") or ""
+                    status  = inc.get("status") or inc.get("Status") or ""
+                    st.markdown(f"- **{title}** — {road}  `{severity}` `{status}`".rstrip())
+                if len(incidents) > 12:
+                    st.caption(f"Showing 12 of {len(incidents)} incidents.  Visit drivenc.gov for the full list.")
+            else:
+                st.success("No active incidents reported for this county right now.")
+        else:
+            st.info("NC DOT county lookup not available for this input.  Visit [drivenc.gov](https://drivenc.gov) for statewide conditions.")
+    else:
+        # Generic advisory for non-NC states
+        st.info(
+            "Live incident feeds are not yet integrated for this state.  "
+            "Check your state DOT site or call **511** before departing."
+        )
 
     # ── destination picker ───────────────────────────────────────────
     st.markdown("---")
-    st.subheader("🛣️ Evacuation Destination")
+    st.subheader("Evacuation Destination")
 
     if not safe_zone_list:
-        st.warning("No safe zones found — try a different starting city.")
+        st.warning("No safe zones found.  Try a different starting city.")
         return
 
     zone_labels = []
     for z in safe_zone_list:
         tags = ""
-        if z["has_rail"]:  tags += " 🚆"
-        if z["near_fire"]: tags += " 🚨"
+        if z["has_rail"]:  tags += " [rail]"
+        if z["near_fire"]: tags += " [fire nearby]"
         zone_labels.append(f"{z['name']}  —  {z['distance_mi']} mi{tags}")
 
     sel_idx = st.selectbox(
@@ -503,7 +583,7 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
         options=range(len(zone_labels)),
         format_func=lambda i: zone_labels[i],
         index=min(st.session_state.selected_zone_idx, len(zone_labels) - 1),
-        help="🚆 = rail available · 🚨 = fire detected nearby — prefer other options",
+        help="[rail] = rail available  ·  [fire nearby] = fire detected — prefer other options",
         key="safe_zone_select",
     )
     st.session_state.selected_zone_idx = sel_idx
@@ -511,200 +591,179 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
     dest_lat, dest_lon = zone["lat"], zone["lon"]
     dest_name = zone["name"]
 
-    # ── shelter cards ────────────────────────────────────────────────
-    shelters = get_shelters_for_city(dest_name, dest_lat, dest_lon)
-    vuln_shelters = [s for s in shelters if s.get("vulnerable_friendly")]
-    gen_shelters  = [s for s in shelters if not s.get("vulnerable_friendly")]
+    # ── SHELTER CARDS (live + static, categorised) ──────────────────
+    st.markdown("---")
+    st.subheader("Shelters at Destination")
 
-    st.subheader("🏥 Shelters at Destination")
+    with st.spinner("Searching for shelters near destination…"):
+        live_shelters = fetch_overpass_shelters(dest_lat, dest_lon)
+    all_shelters_by_cat = _merge_shelters(live_shelters, dest_lat, dest_lon)
 
-    if vuln_shelters:
-        st.markdown("#### 🩺 Vulnerable-Population Shelters  *(ADA · Elderly · Medical)*")
-        for s in vuln_shelters:
-            with st.expander(f"🏥 {s['name']}", expanded=True):
-                st.markdown(f"📍 **{s['address']}**")
-                st.markdown(f"📞 **Phone:** {s['phone']}  |  👥 **Capacity:** {s['capacity_note']}  |  ♿ **ADA:** {'Yes' if s['ada'] else 'No'}")
-                st.info(f"💡 **Why this shelter?**  {s['why']}")
-                gm_dir  = f"https://www.google.com/maps/dir/{origin_lat},{origin_lon}/{s['lat']},{s['lon']}"
-                apple   = f"https://maps.apple.com/?saddr={origin_lat},{origin_lon}&daddr={s['lat']},{s['lon']}"
-                col_a, col_b = st.columns(2)
-                col_a.markdown(f"🗺️ [Directions in Google Maps]({gm_dir})")
-                col_b.markdown(f"🍎 [Directions in Apple Maps]({apple})")
+    # Category filter
+    available_cats = [c for c in SHELTER_CATEGORIES if all_shelters_by_cat.get(c)]
+    chosen_cats = st.multiselect(
+        "Filter by shelter type",
+        options=available_cats,
+        default=available_cats,       # show all by default
+    )
 
-    if gen_shelters:
-        st.markdown("#### 🏢 General-Population Shelters")
-        for s in gen_shelters:
-            with st.expander(f"🏢 {s['name']}", expanded=False):
-                st.markdown(f"📍 **{s['address']}**")
-                st.markdown(f"📞 **Phone:** {s['phone']}  |  👥 **Capacity:** {s['capacity_note']}  |  ♿ **ADA:** {'Yes' if s['ada'] else 'No'}")
-                st.info(f"💡 **Why this shelter?**  {s['why']}")
-                gm_dir  = f"https://www.google.com/maps/dir/{origin_lat},{origin_lon}/{s['lat']},{s['lon']}"
-                apple   = f"https://maps.apple.com/?saddr={origin_lat},{origin_lon}&daddr={s['lat']},{s['lon']}"
-                col_a, col_b = st.columns(2)
-                col_a.markdown(f"🗺️ [Directions in Google Maps]({gm_dir})")
-                col_b.markdown(f"🍎 [Directions in Apple Maps]({apple})")
+    # Pick the first concrete shelter (with real coords) for routing
+    primary_shelter = None
+    for cat in chosen_cats or available_cats:
+        for s in all_shelters_by_cat.get(cat, []):
+            if s.get("lat") and s.get("lon"):
+                primary_shelter = s
+                break
+        if primary_shelter:
+            break
 
-    # primary shelter = vulnerable first, then first general
-    primary_shelter = (vuln_shelters or gen_shelters)[0]
+    # Render cards per category
+    for cat in chosen_cats or available_cats:
+        shelters = all_shelters_by_cat.get(cat, [])
+        if not shelters:
+            continue
+        st.markdown(f"#### {cat}")
+        for s in shelters:
+            label = s["name"]
+            with st.expander(label, expanded=(cat == "General")):
+                if s.get("note"):
+                    st.info(s["note"])
+                if s.get("address"):
+                    st.markdown(f"Address: {s['address']}")
+                cols = st.columns(3)
+                cols[0].markdown(f"Phone: **{s.get('phone','N/A')}**")
+                cols[1].markdown(f"ADA: **{'Yes' if s.get('ada') else 'No'}**")
+                cols[2].markdown(f"Source: *{s.get('source','—')}*")
+                if s.get("website"):
+                    st.markdown(f"[Website]({s['website']})")
+
+    # ── ROUTE CALCULATION (to primary shelter) ──────────────────────
+    if primary_shelter is None:
+        # Fall back to zone centre if no shelter resolved
+        primary_shelter = {"name": dest_name, "lat": dest_lat, "lon": dest_lon}
+
     shelter_lat, shelter_lon = primary_shelter["lat"], primary_shelter["lon"]
 
-    # ── route everything to PRIMARY SHELTER address ─────────────────
     st.markdown("---")
-    st.subheader("📊 Multimodal Route Comparison")
-    st.caption(f"Routes calculated to **{primary_shelter['name']}** — {primary_shelter['address']}")
+    st.subheader("Multimodal Route Comparison")
+    st.caption(f"Routes calculated to **{primary_shelter['name']}**")
 
     dest_key = f"{shelter_lat:.4f},{shelter_lon:.4f}"
-
     if dest_key not in st.session_state.cached_routes:
-        with st.spinner("Calculating routes…"):
+        with st.spinner("Calculating routes via OSRM…"):
             car  = osrm_route(origin_lat, origin_lon, shelter_lat, shelter_lon, "car")
             foot = osrm_route(origin_lat, origin_lon, shelter_lat, shelter_lon, "foot")
         st.session_state.cached_routes[dest_key] = {"car": car, "foot": foot}
 
-    cached = st.session_state.cached_routes[dest_key]
+    cached     = st.session_state.cached_routes[dest_key]
     car_route  = cached["car"]
     foot_route = cached["foot"]
 
-    # transit estimates
-    walk_to_stop_mins = _nearest_stop_walk(st.session_state.search_address)
-    straight_mi       = _haversine(origin_lat, origin_lon, shelter_lat, shelter_lon)
+    # Transit estimates (heuristic)
+    walk_to_stop_mins  = _nearest_stop_walk(st.session_state.search_address)
+    straight_mi        = _haversine(origin_lat, origin_lon, shelter_lat, shelter_lon)
     transit_travel_min = round(straight_mi / 30 * 60, 0)
     transit_total_min  = walk_to_stop_mins + transit_travel_min + 10
 
-    # drive-to-transit hybrid
     drive_to_hub_min = 10
     transit_rest_min = round((straight_mi - 5) / 30 * 60, 0) if straight_mi > 5 else transit_travel_min
     hybrid_total_min = drive_to_hub_min + transit_rest_min + 5
 
-    # ── comparison table ─────────────────────────────────────────────
-    # Fallback estimates when OSRM is unreachable:
-    #   driving  ≈ straight_mi × 1.3  at 45 mph  (road-distance factor)
-    #   walking  ≈ straight_mi × 1.2  at 3.5 mph
-    osrm_ok = car_route is not None or foot_route is not None
-    if not osrm_ok:
+    # Fallback estimates when OSRM is unreachable
+    if car_route is None and foot_route is None:
         st.warning(
-            "⚠️ Live routing service is temporarily unavailable — "
-            "ETAs below are **estimates** based on straight-line distance. "
-            "Use [Google Maps](https://www.google.com/maps) for turn-by-turn navigation."
+            "Live routing (OSRM) is temporarily unavailable.  "
+            "ETAs below are straight-line estimates.  Use the interactive map below for navigation."
         )
 
-    if car_route:
-        drive_dist   = car_route["distance_mi"]
-        drive_eta    = car_route["duration_min"]
-        drive_note   = "Fastest — check 511 for closures"
-    else:
-        drive_dist   = round(straight_mi * 1.3, 1)
-        drive_eta    = round(drive_dist / 45 * 60, 0)
-        drive_note   = "⚠️ Estimate (routing service down) — verify on Google Maps"
-
-    if foot_route:
-        walk_dist    = foot_route["distance_mi"]
-        walk_eta     = foot_route["duration_min"]
-    else:
-        walk_dist    = round(straight_mi * 1.2, 1)
-        walk_eta     = round(walk_dist / 3.5 * 60, 0)
+    drive_dist = car_route["distance_mi"] if car_route else round(straight_mi * 1.3, 1)
+    drive_eta  = car_route["duration_min"] if car_route else round(drive_dist / 45 * 60, 0)
+    walk_dist  = foot_route["distance_mi"] if foot_route else round(straight_mi * 1.2, 1)
+    walk_eta   = foot_route["duration_min"] if foot_route else round(walk_dist / 3.5 * 60, 0)
 
     rows = [
-        {"Mode": "🚗 Driving",          "Distance": f"{drive_dist} mi",
-         "ETA": _fmt(drive_eta),         "Notes": drive_note},
-        {"Mode": "🚌 Transit",          "Distance": f"{straight_mi:.1f} mi",
-         "ETA": _fmt(transit_total_min), "Notes": f"Walk {walk_to_stop_mins} min to stop + ride + 10 min buffer"},
-        {"Mode": "🚗→🚌 Drive+Transit", "Distance": "—",
-         "ETA": _fmt(hybrid_total_min),  "Notes": "Drive to transit hub, then ride"},
-        {"Mode": "🚶 Walking",          "Distance": f"{walk_dist} mi",
-         "ETA": _fmt(walk_eta),          "Notes": "Only realistic < 10 mi"},
+        {"Mode": "Driving",            "Distance": f"{drive_dist} mi",     "ETA": _fmt(drive_eta),         "Notes": "Check 511 for closures"},
+        {"Mode": "Transit",            "Distance": f"{straight_mi:.1f} mi","ETA": _fmt(transit_total_min), "Notes": f"Walk {walk_to_stop_mins} min to stop + ride + 10 min buffer"},
+        {"Mode": "Drive + Transit",    "Distance": "—",                    "ETA": _fmt(hybrid_total_min),  "Notes": "Drive to transit hub, then ride"},
+        {"Mode": "Walking",            "Distance": f"{walk_dist} mi",      "ETA": _fmt(walk_eta),          "Notes": "Only realistic under 10 mi"},
     ]
-
     st.table(rows)
 
-    # ── how to reach transit ─────────────────────────────────────────
-    st.subheader("🚌 Getting to Transit")
+    # ── transit info ─────────────────────────────────────────────────
+    st.subheader("Getting to Transit")
     origin_transit = get_transit_info(st.session_state.search_address) if TRANSIT_DB_AVAILABLE else None
     if origin_transit:
-        with st.expander(f"🏙️ Transit in **{st.session_state.search_address.strip().title()}**", expanded=True):
-            st.markdown("**Agencies:** " + ", ".join(origin_transit["agencies"]))
-            if origin_transit["rail"] and origin_transit["rail_lines"]:
-                st.markdown("🚆 **Rail:** " + " | ".join(origin_transit["rail_lines"]))
+        with st.expander(f"Transit in {st.session_state.search_address.strip().title()}", expanded=True):
+            st.markdown("Agencies: " + ", ".join(origin_transit["agencies"]))
+            if origin_transit["rail"] and origin_transit.get("rail_lines"):
+                st.markdown("Rail: " + " | ".join(origin_transit["rail_lines"]))
             if origin_transit["bus"]:
-                st.markdown("🚌 **Bus:** Available")
+                st.markdown("Bus: Available")
             st.markdown(origin_transit["notes"])
-            st.markdown(f"📞 Info line: **{origin_transit['emergency_hotline']}**")
+            st.markdown(f"Info line: **{origin_transit['emergency_hotline']}**")
             if origin_transit.get("transit_url"):
-                st.markdown(f"🌐 [Transit website]({origin_transit['transit_url']})")
+                st.markdown(f"[Transit website]({origin_transit['transit_url']})")
 
             st.markdown("---")
-            st.markdown("#### 🚶🚕🚗 How to reach the nearest stop")
+            st.markdown("How to reach the nearest stop")
             walk_min = _nearest_stop_walk(st.session_state.search_address)
             cols = st.columns(3)
-            cols[0].metric("🚶 Walk", f"{walk_min} min", "~0.5–1 mi")
-            cols[1].metric("🚕 Uber / Lyft", f"{max(walk_min - 5, 3)} min", "request in app now")
-            cols[2].metric("🚗 Drive & park", "~5 min", "check parking alerts")
+            cols[0].metric("Walk", f"{walk_min} min", "~0.5–1 mi")
+            cols[1].metric("Rideshare", f"{max(walk_min - 5, 3)} min", "request in app now")
+            cols[2].metric("Drive & park", "~5 min", "check parking alerts")
 
-    # destination transit
     dest_transit = get_transit_info(dest_name) if TRANSIT_DB_AVAILABLE else None
     if dest_transit:
-        with st.expander(f"🏙️ Transit at **{dest_name}** (destination)", expanded=False):
-            st.markdown("**Agencies:** " + ", ".join(dest_transit["agencies"]))
-            if dest_transit["rail"] and dest_transit["rail_lines"]:
-                st.markdown("🚆 **Rail:** " + " | ".join(dest_transit["rail_lines"]))
+        with st.expander(f"Transit at {dest_name} (destination)", expanded=False):
+            st.markdown("Agencies: " + ", ".join(dest_transit["agencies"]))
+            if dest_transit["rail"] and dest_transit.get("rail_lines"):
+                st.markdown("Rail: " + " | ".join(dest_transit["rail_lines"]))
             if dest_transit["bus"]:
-                st.markdown("🚌 **Bus:** Available")
+                st.markdown("Bus: Available")
             st.markdown(dest_transit["notes"])
-            st.markdown(f"📞 Info line: **{dest_transit['emergency_hotline']}**")
-            if dest_transit.get("transit_url"):
-                st.markdown(f"🌐 [Transit website]({dest_transit['transit_url']})")
+            st.markdown(f"Info line: **{dest_transit['emergency_hotline']}**")
 
-    with st.expander("🚐 Emergency Shuttle", expanded=False):
+    with st.expander("Emergency Shuttle", expanded=False):
         st.write("Estimated time varies.  Contact local emergency services.")
         st.info("Dial **211** for evacuation assistance anywhere in the US.")
 
-    st.warning("⚠️ Public transit may be suspended during active emergencies. Always have a backup driving plan.")
+    st.warning("Public transit may be suspended during active emergencies.  Always have a backup driving plan.")
 
-    # ── turn-by-turn ─────────────────────────────────────────────────
+    # ── turn-by-turn (OSRM only — no external links) ───────────────
     st.markdown("---")
-    st.subheader("🧭 Turn-by-Turn Directions")
-
-    # Google Maps deep-link that works regardless of OSRM status
-    gm_dir = (
-        f"https://www.google.com/maps/dir/"
-        f"{origin_lat},{origin_lon}/{shelter_lat},{shelter_lon}"
-    )
+    st.subheader("Turn-by-Turn Directions")
 
     if car_route and car_route["steps"]:
-        with st.expander("🚗 Driving directions", expanded=True):
+        with st.expander("Driving directions", expanded=True):
             for i, s in enumerate(car_route["steps"][:20], 1):
                 st.write(f"{i}. {s}")
             if len(car_route["steps"]) > 20:
                 st.caption(f"… and {len(car_route['steps']) - 20} more steps")
-            st.markdown(f"📱 [Open full route in Google Maps]({gm_dir})")
     else:
-        with st.expander("🚗 Driving directions", expanded=True):
-            st.info("Live turn-by-turn unavailable right now.")
-            st.markdown(f"👉 **[Get driving directions in Google Maps]({gm_dir})**")
+        with st.expander("Driving directions", expanded=True):
+            st.info("Live turn-by-turn unavailable right now.  Use the interactive map below to navigate.")
 
     if foot_route and foot_route["steps"]:
-        with st.expander("🚶 Walking directions", expanded=False):
+        with st.expander("Walking directions", expanded=False):
             for i, s in enumerate(foot_route["steps"][:20], 1):
                 st.write(f"{i}. {s}")
             if len(foot_route["steps"]) > 20:
                 st.caption(f"… and {len(foot_route['steps']) - 20} more steps")
-            st.markdown(f"📱 [Open full route in Google Maps]({gm_dir}?mode=walk)")
     else:
-        with st.expander("🚶 Walking directions", expanded=False):
-            st.info("Live turn-by-turn unavailable right now.")
-            st.markdown(f"👉 **[Get walking directions in Google Maps]({gm_dir}?mode=walk)**")
+        with st.expander("Walking directions", expanded=False):
+            st.info("Live walking directions unavailable right now.  Use the interactive map below.")
 
-    # ── interactive map ──────────────────────────────────────────────
+    # ── INTERACTIVE MAP (Folium / Leaflet + OSM tiles) ──────────────
     st.markdown("---")
-    st.subheader("🗺️ Route Map")
+    st.subheader("Route Map")
 
     mid_lat  = (origin_lat + shelter_lat) / 2
     mid_lon  = (origin_lon + shelter_lon) / 2
-    zoom = 9 if straight_mi > 80 else (10 if straight_mi > 30 else 12)
+    zoom     = 9 if straight_mi > 80 else (10 if straight_mi > 30 else 12)
 
     m = folium.Map(location=[mid_lat, mid_lon], zoom_start=zoom, tiles="CartoDB positron")
 
-    # origin
+    # ── origin pin ──
     folium.Marker(
         [origin_lat, origin_lon],
         popup=f"<b>START</b><br>{st.session_state.search_address.strip().title()}",
@@ -712,55 +771,66 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
         tooltip="Your Location",
     ).add_to(m)
 
-    # shelter pins
-    for s in shelters:
-        colour = "red" if s.get("vulnerable_friendly") else "blue"
-        icon   = "hospital" if s.get("vulnerable_friendly") else "flag"
-        folium.Marker(
-            [s["lat"], s["lon"]],
-            popup=(
-                f"<b>{s['name']}</b><br>"
-                f"{s['address']}<br>"
-                f"📞 {s['phone']}<br>"
-                f"{'♿ ADA ' if s['ada'] else ''}"
-                f"{'🩺 Vulnerable-friendly' if s.get('vulnerable_friendly') else ''}"
-            ),
-            icon=folium.Icon(color=colour, icon=icon, prefix="fa"),
-            tooltip=s["name"],
-        ).add_to(m)
+    # ── shelter pins (all categories) ──
+    cat_colours = {
+        "General": "blue", "Women / Domestic-Violence": "purple",
+        "Elderly": "orange", "Disabled / ADA": "cadetblue",
+        "Mental Health": "darkblue", "Veterans": "darkgreen",
+        "Families w/ Children": "pink", "Pet-Friendly": "beige",
+        "Hospital / Medical": "red",
+    }
+    for cat in SHELTER_CATEGORIES:
+        for s in all_shelters_by_cat.get(cat, []):
+            if not s.get("lat") or not s.get("lon"):
+                continue
+            colour = cat_colours.get(cat, "gray")
+            folium.Marker(
+                [s["lat"], s["lon"]],
+                popup=(
+                    f"<b>{s['name']}</b><br>"
+                    f"<i>{cat}</i><br>"
+                    f"Phone: {s.get('phone','—')}<br>"
+                    f"{'ADA accessible' if s.get('ada') else ''}"
+                ),
+                icon=folium.Icon(color=colour, icon="flag", prefix="fa"),
+                tooltip=f"{s['name']} ({cat})",
+            ).add_to(m)
 
-    # route polylines
+    # ── route polylines ──
     if car_route:
         folium.PolyLine(
             [[c[1], c[0]] for c in car_route["geometry"]],
-            color="blue", weight=5, opacity=0.8, tooltip="🚗 Driving route",
+            color="blue", weight=5, opacity=0.8, tooltip="Driving route",
         ).add_to(m)
     if foot_route:
         folium.PolyLine(
             [[c[1], c[0]] for c in foot_route["geometry"]],
-            color="green", weight=3, opacity=0.7, dash_array="8", tooltip="🚶 Walking route",
+            color="green", weight=3, opacity=0.7, dash_array="8", tooltip="Walking route",
         ).add_to(m)
 
-    # fire circles
+    # ── fire circles ──
     for f in nearest_fires[:10]:
         folium.Circle(
             [f["lat"], f["lon"]],
             radius=max(f.get("acres", 100) * 40, 800),
             color="red", fill=True, fillColor="orange", fillOpacity=0.35,
-            popup=f"🔥 {f['name']}<br>{f['distance']} mi away",
+            popup=f"{f['name']}  —  {f['distance']} mi away",
         ).add_to(m)
 
-    # legend
+    # ── legend ──
     legend_html = """
     <div style="position:fixed;bottom:30px;left:30px;z-index:1000;
-         background:white;padding:10px 14px;border-radius:8px;
+         background:white;padding:12px 16px;border-radius:8px;
          border:2px solid #ccc;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.3);">
      <b>Legend</b><br>
      <span style="color:blue;">━━</span> Driving &nbsp;
      <span style="color:green;">╌╌</span> Walking &nbsp;
      <span style="color:red;">●</span> Fire &nbsp;
-     🏥 Vulnerable shelter &nbsp;
-     🏢 General shelter
+     <span style="color:blue;">▪</span> General &nbsp;
+     <span style="color:purple;">▪</span> Women/DV &nbsp;
+     <span style="color:orange;">▪</span> Elderly &nbsp;
+     <span style="color:darkgreen;">▪</span> Veterans &nbsp;
+     <span style="color:red;">▪</span> Hospital
     </div>"""
     m.get_root().html.add_child(folium.Element(legend_html))
 
@@ -768,11 +838,31 @@ def render_evacuation_planner_page(fire_data, vulnerable_populations):
 
     # ── emergency resources ──────────────────────────────────────────
     st.markdown("---")
-    st.subheader("📞 Emergency Resources")
+    st.subheader("Emergency Resources")
     c1, c2, c3 = st.columns(3)
-    c1.markdown("**🚨 Emergency**\n- 911 — Fire / Police / Medical\n- 211 — Evacuation assistance\n- 📻 Local AM/FM emergency broadcast")
-    c2.markdown("**✅ Evacuation Checklist**\n- 📄 IDs, insurance docs\n- 💊 Medications (7-day supply)\n- 🐾 Pet food + carriers\n- 💵 Cash + cards\n- 🔋 Phone charger / power bank")
-    c3.markdown("**🛣️ Road Safety**\n- 🚧 Check [511.org](https://www.511.org)\n- ⛽ Fill gas tank NOW\n- 💧 Water + snacks for 24 h\n- 📱 Download offline maps")
+    c1.markdown(
+        "**Emergency Lines**\n"
+        "- 911 — Fire / Police / Medical\n"
+        "- 211 — Evacuation assistance\n"
+        "- 988 — Suicide & Crisis Lifeline\n"
+        "- 1-800-RED-CROSS — Shelter referral\n"
+        "- Local AM/FM emergency broadcast"
+    )
+    c2.markdown(
+        "**Evacuation Checklist**\n"
+        "- IDs, insurance docs\n"
+        "- Medications (7-day supply)\n"
+        "- Pet food + carriers\n"
+        "- Cash + cards\n"
+        "- Phone charger / power bank"
+    )
+    c3.markdown(
+        "**Road Safety**\n"
+        "- Call 511 for road conditions\n"
+        "- Fill gas tank NOW\n"
+        "- Water + snacks for 24 h\n"
+        "- Download offline maps"
+    )
 
 
 # ── standalone test ──────────────────────────────────────────────────
