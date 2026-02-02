@@ -34,6 +34,13 @@ try:
 except:
     OSM_ROUTING_AVAILABLE = False
 
+# Import evacuation planner page
+try:
+    from evacuation_planner_page import render_evacuation_planner_page
+    PLANNER_AVAILABLE = True
+except:
+    PLANNER_AVAILABLE = False
+
 # Page config
 st.set_page_config(
     page_title="Wildfire Caregiver Alert System",
@@ -284,7 +291,7 @@ with st.sidebar:
     
     page = st.radio(
         "Navigation",
-        ["🏠 Dashboard", "📊 Equity Analysis", "🎯 Risk Calculator", "📈 Impact Projection", "ℹ️ About"]
+        ["🏠 Dashboard", "🚗 Evacuation Planner", "📊 Equity Analysis", "🎯 Risk Calculator", "📈 Impact Projection", "ℹ️ About"]
     )
     
     st.markdown("---")
@@ -493,6 +500,14 @@ if page == "🏠 Dashboard":
         st.markdown("---")
         st.subheader("📞 Emergency")
         st.info("**Fire:** (704) 555-0100\n**Evacuation:** (704) 555-0200\n**911:** Emergency")
+
+# ==================== EVACUATION PLANNER ====================
+elif page == "🚗 Evacuation Planner":
+    if PLANNER_AVAILABLE:
+        render_evacuation_planner_page(fire_data, vulnerable_populations)
+    else:
+        st.error("Evacuation Planner module not available")
+        st.info("Please ensure evacuation_planner_page.py is in the src/ directory")
 
 # ==================== EQUITY ANALYSIS ====================
 elif page == "📊 Equity Analysis":
