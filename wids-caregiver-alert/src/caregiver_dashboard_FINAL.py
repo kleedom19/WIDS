@@ -115,13 +115,14 @@ st.markdown("""
 def load_exact_county_coordinates():
     """Load county centroids from Census file."""
     candidates = [
+        os.path.join(_HERE, "..", "..", "..", "wids-caregiver-alert", "data", "CenPop2020_Mean_CO.txt"),
         os.path.join(_HERE, "..", "data", "CenPop2020_Mean_CO.txt"),
         os.path.join(_HERE, "..", "..", "wids-caregiver-alert", "data", "CenPop2020_Mean_CO.txt"),
         os.path.join(_HERE, "data", "CenPop2020_Mean_CO.txt"),
-        # repo-root relative (if run from repo root)
         os.path.join("wids-caregiver-alert", "data", "CenPop2020_Mean_CO.txt"),
         os.path.join("data", "CenPop2020_Mean_CO.txt"),
     ]
+    candidates = [os.path.realpath(c) for c in candidates]
 
     census_path = None
     for p in candidates:
@@ -177,16 +178,20 @@ def load_vulnerable_populations():
     Paths anchored to _HERE so this works from any CWD.
     """
     candidates = [
-        # from src/ up into 01_raw_data (standard repo layout)
+        # three levels up from src/ → repo root (Streamlit Cloud layout)
+        os.path.join(_HERE, "..", "..", "..", "01_raw_data", "external", "SVI_2022_US_county.csv"),
+        # two levels up from src/ → repo root (local layout)
         os.path.join(_HERE, "..", "..", "01_raw_data", "external", "SVI_2022_US_county.csv"),
-        # from wids-caregiver-alert/ up to repo root
+        # one level up from src/ → wids-caregiver-alert root
         os.path.join(_HERE, "..", "01_raw_data", "external", "SVI_2022_US_county.csv"),
-        # if run from repo root
+        # if run from repo root directly
         os.path.join("01_raw_data", "external", "SVI_2022_US_county.csv"),
         # inside data/ subfolder
         os.path.join(_HERE, "..", "data", "SVI_2022_US_county.csv"),
         os.path.join("data", "SVI_2022_US_county.csv"),
     ]
+    # realpath every candidate so ".." segments resolve fully before exists()
+    candidates = [os.path.realpath(c) for c in candidates]
 
     svi_path = None
     for p in candidates:
@@ -260,10 +265,12 @@ def load_vulnerable_populations():
 @st.cache_data
 def load_wids_analysis_data():
     candidates = [
+        os.path.join(_HERE, "..", "..", "..", "01_raw_data", "processed", "fire_events_with_svi_and_delays.csv"),
         os.path.join(_HERE, "..", "..", "01_raw_data", "processed", "fire_events_with_svi_and_delays.csv"),
         os.path.join(_HERE, "..", "01_raw_data", "processed", "fire_events_with_svi_and_delays.csv"),
         os.path.join("01_raw_data", "processed", "fire_events_with_svi_and_delays.csv"),
     ]
+    candidates = [os.path.realpath(c) for c in candidates]
     for p in candidates:
         if os.path.exists(p):
             try:

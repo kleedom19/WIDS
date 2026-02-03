@@ -1083,6 +1083,8 @@ def render_directions_page(fire_data, vulnerable_populations):
     if combined_itin:
         tab_labels.append(f"Combined  ({_fmt(combined_itin['total_min'])})")
     tab_labels.append("Intercity Bus")
+
+    tabs = st.tabs(tab_labels)
     active_mode = "driving"
 
     # ── TAB: DRIVING ──
