@@ -50,6 +50,13 @@ try:
 except Exception:
     PLANNER_AVAILABLE = False
 
+# Import directions & navigation page
+try:
+    from directions_page import render_directions_page
+    DIRECTIONS_AVAILABLE = True
+except Exception:
+    DIRECTIONS_AVAILABLE = False
+
 # ── page config ──────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Wildfire Caregiver Alert System",
@@ -324,7 +331,7 @@ with st.sidebar:
 
     page = st.radio(
         "Navigation",
-        ["Dashboard", "Evacuation Planner", "Equity Analysis", "Risk Calculator", "Impact Projection", "About"]
+        ["Dashboard", "Evacuation Planner", "Directions & Navigation", "Equity Analysis", "Risk Calculator", "Impact Projection", "About"]
     )
 
     st.markdown("---")
@@ -488,6 +495,16 @@ elif page == "Evacuation Planner":
         render_evacuation_planner_page(fire_data, vulnerable_populations)
     else:
         st.error("Evacuation Planner module not available.  Ensure evacuation_planner_page.py is in src/.")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DIRECTIONS & NAVIGATION
+# ══════════════════════════════════════════════════════════════════════
+elif page == "Directions & Navigation":
+    if DIRECTIONS_AVAILABLE:
+        render_directions_page(fire_data, vulnerable_populations)
+    else:
+        st.error("Directions module not available.  Ensure directions_page.py is in src/.")
 
 
 # ══════════════════════════════════════════════════════════════════════
