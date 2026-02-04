@@ -336,49 +336,51 @@ with st.sidebar:
     st.markdown(LOGO_SVG, unsafe_allow_html=True)
     st.markdown("---")
 
-    # ── Enhanced navigation with story-driven flow ──
+    # ── Navigation with visual sections ──
     
     # Handle navigation overrides from Start Here page
     if "nav_override" in st.session_state:
         page = st.session_state.nav_override
         del st.session_state.nav_override
     else:
-        st.markdown("### 🎯 Quick Start")
+        st.markdown("### Navigation")
         page = st.radio(
-            "",  # Remove label for cleaner look
-            ["🏠 Start Here", "Dashboard"],
-            label_visibility="collapsed"
-        )
-        
-        st.markdown("---")
-        st.markdown("### 🚨 Evacuation Tools")
-        evac_page = st.radio(
             "",
-            ["Evacuation Planner", "Safe Routes & Transit"],
+            [
+                "🏠 Start Here",
+                "📊 Dashboard",
+                "─────────────",  # Divider
+                "🚨 Evacuation Planner",
+                "🚗 Safe Routes & Transit",
+                "─────────────",  # Divider
+                "📈 Equity Analysis",
+                "🧮 Risk Calculator",
+                "🔮 Impact Projection",
+                "─────────────",  # Divider
+                "ℹ️ About"
+            ],
             label_visibility="collapsed"
         )
         
-        st.markdown("---")
-        st.markdown("### 📊 Research & Analysis")
-        analysis_page = st.radio(
-            "",
-            ["Equity Analysis", "Risk Calculator", "Impact Projection"],
-            label_visibility="collapsed"
-        )
-        
-        st.markdown("---")
-        about_selected = st.checkbox("ℹ️ About", value=False)
-        
-        # Determine which page to show
-        if about_selected:
-            page = "About"
-        elif evac_page == "Safe Routes & Transit":
+        # Map display names to internal page names
+        if page == "─────────────":
+            # If user clicks divider, default to Dashboard
+            page = "Dashboard"
+        elif page == "📊 Dashboard":
+            page = "Dashboard"
+        elif page == "🚨 Evacuation Planner":
+            page = "Evacuation Planner"
+        elif page == "🚗 Safe Routes & Transit":
             page = "Directions & Navigation"
-        elif evac_page:
-            page = evac_page
-        elif analysis_page:
-            page = analysis_page
-        # else page is already set to Start Here or Dashboard
+        elif page == "📈 Equity Analysis":
+            page = "Equity Analysis"
+        elif page == "🧮 Risk Calculator":
+            page = "Risk Calculator"
+        elif page == "🔮 Impact Projection":
+            page = "Impact Projection"
+        elif page == "ℹ️ About":
+            page = "About"
+        # else page is already set correctly (Start Here)
 
     st.markdown("---")
     st.markdown("### Live Fire Data")
