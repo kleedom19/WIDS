@@ -10,3 +10,6 @@ __pycache__/
 
 # data exports
 *.csv
+
+run.py
+stream_run.py
