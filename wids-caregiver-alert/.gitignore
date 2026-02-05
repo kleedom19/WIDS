@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.pyc
+.DS_Store
+*.log
+.env
+*.bak
+*.save
+*_BACKUP.*

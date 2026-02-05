@@ -1,5 +1,9 @@
+# your branch ignores
 .env
-.venv/
-*.pyc
+.venv
 __pycache__/
 
+# main branch ignores
+.env
+*.log
+.DS_Store
