@@ -9,13 +9,11 @@ def get_client() -> Client:
     if not url or not key:
         raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY in .env")
     return create_client(url, key)
-
+#testing to seeif connection worked 
 def main():
     supabase = get_client()
 
-    # Replace "your_table" with a real table in your Supabase project
-    # For demo purposes: SELECT * LIMIT 5
-    response = supabase.table("your_table").select("*").limit(5).execute()
+    response = supabase.table("geo_events_geoevent").select("*").limit(5).execute()
 
     # response.data is a list of dict rows
     print("Rows:")

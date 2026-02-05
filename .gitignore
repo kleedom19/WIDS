@@ -7,3 +7,6 @@ __pycache__/
 .env
 *.log
 .DS_Store
+
+# data exports
+*.csv
