@@ -1,14 +1,14 @@
-# 🔥 Wildfire Caregiver Alert System
+# Wildfire Caregiver Alert System
 
 **WiDS Datathon 2025 | 49ers Intelligence Lab | UNC Charlotte**
 
-Early warning system that reduces evacuation delays for vulnerable populations during wildfires.
+Early warning system that reduces evacuation delays for vulnerable populations, as defined by the CDC, during wildfires.
 
 ## Features
-- 🔴 Real-time fire monitoring (259 active fires)
-- 👥 200+ vulnerable counties tracked
-- 🚗 Evacuation route recommendations
-- 📊 Equity analysis dashboard
+-  Real-time fire monitoring (259 active fires)
+-  200+ vulnerable counties tracked
+- Evacuation route recommendations
+-  Equity analysis dashboard
 
 ## Quick Start
 ```bash
@@ -23,5 +23,5 @@ streamlit run caregiver_dashboard_FIXED.py
 - US Census (county coordinates)
 
 ## Team
-Lean Yesh - UNC Charlotte
-layesh1@charlotte.edu
+UNC Charlotte WiDS Team
+Questions: layesh1@charlotte.edu
