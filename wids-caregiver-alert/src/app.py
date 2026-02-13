@@ -84,7 +84,7 @@ if st.session_state.user_role is None:
     st.stop()  # CRITICAL: Stop execution until logged in (fixes Streamlit Cloud issue)
 
 elif st.session_state.user_role == "emergency_response":
-    # Emergency Response Dashboard
+    # Emergency Response Dashboard - PROFESSIONAL COMMAND CENTER
     
     # Add logout button to sidebar
     with st.sidebar:
@@ -94,15 +94,15 @@ elif st.session_state.user_role == "emergency_response":
             st.rerun()
         
         st.markdown("---")
-        st.markdown("### Active Fires")
+        st.markdown("### SYSTEM STATUS")
         if fire_data is not None and len(fire_data) > 0:
-            st.metric("Total Fires", len(fire_data))
-            st.metric("Named Incidents", 
+            st.metric("Active Incidents", len(fire_data))
+            st.metric("Named Operations", 
                      len(fire_data[fire_data['data_source'] != 'NASA_FIRMS']))
         else:
-            st.info("No active fires")
+            st.info("No active incidents")
     
-    # Main dashboard
+    # Main dashboard - renders professional command center
     render_emergency_response_dashboard(fire_data)
 
 elif st.session_state.user_role == "evacuee_caregiver":
