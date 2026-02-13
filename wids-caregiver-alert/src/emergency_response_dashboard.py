@@ -157,22 +157,40 @@ def render_emergency_response_dashboard(fire_data):
     </div>
     """, unsafe_allow_html=True)
     
-    # Process fire data for metrics
+    # Process fire data for metrics - SAFELY handle missing columns
     if fire_data is not None and not fire_data.empty:
-        # Calculate key metrics
-        active_fires = len(fire_data[fire_data['ContainmentDateTime'].isna()])
+        # Calculate key metrics - handle different column names
         total_fires = len(fire_data)
-        total_acres = fire_data['DailyAcres'].sum() if 'DailyAcres' in fire_data.columns else 0
+        
+        # Check for contained/active status in various column names
+        active_fires = total_fires  # Default to all active
+        if 'ContainmentDateTime' in fire_data.columns:
+            active_fires = len(fire_data[fire_data['ContainmentDateTime'].isna()])
+        elif 'PercentContained' in fire_data.columns:
+            active_fires = len(fire_data[fire_data['PercentContained'] < 100])
+        elif 'containment' in fire_data.columns:
+            active_fires = len(fire_data[fire_data['containment'] < 100])
+        
+        # Calculate total acres - handle different column names
+        total_acres = 0
+        if 'DailyAcres' in fire_data.columns:
+            total_acres = fire_data['DailyAcres'].sum()
+        elif 'acres' in fire_data.columns:
+            total_acres = fire_data['acres'].sum()
+        elif 'size' in fire_data.columns:
+            total_acres = fire_data['size'].sum()
         
         # Calculate personnel estimate (assume 15 personnel per active fire on average)
         estimated_personnel = active_fires * 15
         
         # Calculate evacuations from high-vulnerability areas
+        estimated_evacuations = active_fires * 150  # Default estimate
         if 'SVI_Category' in fire_data.columns:
             high_vuln_fires = fire_data[fire_data['SVI_Category'].isin(['High', 'Very High'])]
-            estimated_evacuations = len(high_vuln_fires) * 250  # Estimate
-        else:
-            estimated_evacuations = active_fires * 150
+            estimated_evacuations = len(high_vuln_fires) * 250
+        elif 'svi_category' in fire_data.columns:
+            high_vuln_fires = fire_data[fire_data['svi_category'].isin(['High', 'Very High'])]
+            estimated_evacuations = len(high_vuln_fires) * 250
     else:
         active_fires = 0
         total_fires = 0
@@ -225,24 +243,60 @@ def render_emergency_response_dashboard(fire_data):
     
     if fire_data is not None and not fire_data.empty:
         # Identify critical fires (large acreage, high vulnerability areas)
-        critical_fires = fire_data[
-            (fire_data['DailyAcres'] > 1000) | 
-            (fire_data['SVI_Category'] == 'Very High')
-        ].head(2) if 'SVI_Category' in fire_data.columns and 'DailyAcres' in fire_data.columns else fire_data.head(2)
+        # Handle different column names
+        acres_col = None
+        for col in ['DailyAcres', 'acres', 'size']:
+            if col in fire_data.columns:
+                acres_col = col
+                break
+        
+        svi_col = None
+        for col in ['SVI_Category', 'svi_category', 'vulnerability']:
+            if col in fire_data.columns:
+                svi_col = col
+                break
+        
+        # Get critical fires
+        if acres_col and svi_col:
+            critical_fires = fire_data[
+                (fire_data[acres_col] > 1000) | 
+                (fire_data[svi_col].isin(['Very High', 'High']))
+            ].head(2)
+        elif acres_col:
+            critical_fires = fire_data.nlargest(2, acres_col)
+        else:
+            critical_fires = fire_data.head(2)
         
         alert_col1, alert_col2 = st.columns(2)
         
         for idx, (i, fire) in enumerate(critical_fires.iterrows()):
             with alert_col1 if idx == 0 else alert_col2:
-                priority = "CRITICAL" if fire.get('DailyAcres', 0) > 1000 else "HIGH"
+                # Get acres value
+                acres = 0
+                if acres_col:
+                    acres = fire.get(acres_col, 0)
+                
+                priority = "CRITICAL" if acres > 1000 else "HIGH"
                 badge_class = "critical" if priority == "CRITICAL" else "high"
                 card_class = "critical" if priority == "CRITICAL" else "warning"
                 
-                fire_name = fire.get('IncidentName', f'Incident {i}')
-                location = fire.get('POOCounty', 'Unknown Location')
-                acres = fire.get('DailyAcres', 0)
+                # Get fire name - handle different column names
+                fire_name = None
+                for col in ['IncidentName', 'incident_name', 'name', 'fire_name']:
+                    if col in fire_data.columns and pd.notna(fire.get(col)):
+                        fire_name = fire.get(col)
+                        break
+                if not fire_name:
+                    fire_name = f'Incident {i}'
                 
-                dispatch_time = "14:23"  # You can calculate this from fire data if timestamp available
+                # Get location - handle different column names
+                location = "Unknown Location"
+                for col in ['POOCounty', 'county', 'location', 'area']:
+                    if col in fire_data.columns and pd.notna(fire.get(col)):
+                        location = fire.get(col)
+                        break
+                
+                dispatch_time = datetime.now().strftime('%H:%M')
                 
                 st.markdown(f"""
                 <div class="status-card {card_class}">
@@ -269,39 +323,64 @@ def render_emergency_response_dashboard(fire_data):
     st.markdown('<div class="section-header">ACTIVE INCIDENTS</div>', unsafe_allow_html=True)
     
     if fire_data is not None and not fire_data.empty:
-        # Prepare incidents table
+        # Prepare incidents table - handle different column names
         incidents_display = fire_data.copy()
         
-        # Create incident table with relevant columns
         display_cols = []
         rename_map = {}
         
-        if 'IncidentName' in incidents_display.columns:
-            display_cols.append('IncidentName')
-            rename_map['IncidentName'] = 'Incident Name'
+        # Incident name
+        for col in ['IncidentName', 'incident_name', 'name', 'fire_name']:
+            if col in incidents_display.columns:
+                display_cols.append(col)
+                rename_map[col] = 'Incident Name'
+                break
         
-        if 'POOCounty' in incidents_display.columns:
-            display_cols.append('POOCounty')
-            rename_map['POOCounty'] = 'Location'
+        # Location
+        for col in ['POOCounty', 'county', 'location', 'area']:
+            if col in incidents_display.columns:
+                display_cols.append(col)
+                rename_map[col] = 'Location'
+                break
         
-        if 'DailyAcres' in incidents_display.columns:
-            display_cols.append('DailyAcres')
-            rename_map['DailyAcres'] = 'Acres'
+        # Acres
+        acres_col = None
+        for col in ['DailyAcres', 'acres', 'size']:
+            if col in incidents_display.columns:
+                acres_col = col
+                display_cols.append(col)
+                rename_map[col] = 'Acres'
+                break
         
-        if 'PercentContained' in incidents_display.columns:
-            display_cols.append('PercentContained')
-            rename_map['PercentContained'] = 'Contained %'
+        # Containment
+        containment_col = None
+        for col in ['PercentContained', 'percent_contained', 'containment']:
+            if col in incidents_display.columns:
+                containment_col = col
+                display_cols.append(col)
+                rename_map[col] = 'Contained %'
+                break
         
-        if 'SVI_Category' in incidents_display.columns:
-            display_cols.append('SVI_Category')
-            rename_map['SVI_Category'] = 'Vulnerability'
+        # Vulnerability
+        svi_col = None
+        for col in ['SVI_Category', 'svi_category', 'vulnerability']:
+            if col in incidents_display.columns:
+                svi_col = col
+                display_cols.append(col)
+                rename_map[col] = 'Vulnerability'
+                break
         
         # Add priority based on acreage and vulnerability
         def calculate_priority(row):
-            acres = row.get('DailyAcres', 0)
-            svi = row.get('SVI_Category', 'Low')
+            acres = 0
+            if acres_col:
+                acres = row.get(acres_col, 0)
             
-            if acres > 5000 or svi == 'Very High':
+            svi = 'Low'
+            if svi_col:
+                svi = row.get(svi_col, 'Low')
+            
+            if acres > 5000 or svi in ['Very High', 'Critical']:
                 return 'CRITICAL'
             elif acres > 1000 or svi == 'High':
                 return 'HIGH'
@@ -314,12 +393,16 @@ def render_emergency_response_dashboard(fire_data):
         display_cols.insert(0, 'Priority')
         
         # Add status
-        incidents_display['Status'] = incidents_display.apply(
-            lambda x: 'CONTAINED' if x.get('PercentContained', 0) == 100 
-            else 'ACTIVE' if pd.isna(x.get('ContainmentDateTime')) 
-            else 'MONITORING',
-            axis=1
-        )
+        def calculate_status(row):
+            if containment_col:
+                contained = row.get(containment_col, 0)
+                if contained == 100:
+                    return 'CONTAINED'
+                elif contained > 50:
+                    return 'MONITORING'
+            return 'ACTIVE'
+        
+        incidents_display['Status'] = incidents_display.apply(calculate_status, axis=1)
         display_cols.append('Status')
         
         # Filter and rename columns
@@ -328,11 +411,15 @@ def render_emergency_response_dashboard(fire_data):
         
         # Format acres
         if 'Acres' in incidents_table.columns:
-            incidents_table['Acres'] = incidents_table['Acres'].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "0")
+            incidents_table['Acres'] = incidents_table['Acres'].apply(
+                lambda x: f"{x:,.0f}" if pd.notna(x) else "0"
+            )
         
         # Format contained percentage
         if 'Contained %' in incidents_table.columns:
-            incidents_table['Contained %'] = incidents_table['Contained %'].apply(lambda x: f"{int(x)}%" if pd.notna(x) else "0%")
+            incidents_table['Contained %'] = incidents_table['Contained %'].apply(
+                lambda x: f"{int(x)}%" if pd.notna(x) else "0%"
+            )
         
         # Display table
         st.dataframe(
@@ -357,7 +444,13 @@ def render_emergency_response_dashboard(fire_data):
             resources = pd.DataFrame({
                 'Resource Type': ['Engine Companies', 'Hand Crews', 'Helicopters', 'Dozers', 'Command Units'],
                 'Available': [12, 8, 4, 6, 3],
-                'Deployed': [min(active_count * 2, 10), min(active_count * 2, 7), min(active_count, 3), min(active_count, 5), min(active_count, 2)],
+                'Deployed': [
+                    min(active_count * 2, 10), 
+                    min(active_count * 2, 7), 
+                    min(active_count, 3), 
+                    min(active_count, 5), 
+                    min(active_count, 2)
+                ],
                 'Out of Service': [2, 1, 1, 1, 1]
             })
         else:
@@ -417,45 +510,67 @@ def render_emergency_response_dashboard(fire_data):
         st.markdown('<div class="section-header">INCIDENT TIMELINE</div>', unsafe_allow_html=True)
         
         # Create timeline from fire data
-        if fire_data is not None and not fire_data.empty and 'FireDiscoveryDateTime' in fire_data.columns:
-            # Convert to datetime
-            fire_data['FireDiscoveryDateTime'] = pd.to_datetime(fire_data['FireDiscoveryDateTime'], errors='coerce')
+        has_timeline = False
+        
+        if fire_data is not None and not fire_data.empty:
+            # Try different timestamp column names
+            date_col = None
+            for col in ['FireDiscoveryDateTime', 'discovery_date', 'start_date', 'timestamp', 'date']:
+                if col in fire_data.columns:
+                    date_col = col
+                    break
             
-            # Group by date
-            timeline = fire_data.groupby(fire_data['FireDiscoveryDateTime'].dt.date).size().reset_index()
-            timeline.columns = ['Date', 'New Incidents']
-            
-            # Get last 14 days
-            timeline = timeline.tail(14)
-            
-            fig2 = go.Figure()
-            
-            fig2.add_trace(go.Scatter(
-                x=timeline['Date'],
-                y=timeline['New Incidents'],
-                name='New Incidents',
-                line=dict(color='#dc3545', width=3),
-                fill='tozeroy',
-                fillcolor='rgba(220, 53, 69, 0.1)'
-            ))
-            
-            fig2.update_layout(
-                height=350,
-                plot_bgcolor='#1e2128',
-                paper_bgcolor='#1e2128',
-                font=dict(color='#ffffff'),
-                margin=dict(l=0, r=0, t=20, b=0),
-                xaxis=dict(gridcolor='#2d3139', showgrid=True),
-                yaxis=dict(title='Incidents', gridcolor='#2d3139', showgrid=True),
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                )
-            )
-        else:
+            if date_col:
+                try:
+                    # Convert to datetime
+                    fire_data_copy = fire_data.copy()
+                    fire_data_copy[date_col] = pd.to_datetime(fire_data_copy[date_col], errors='coerce')
+                    
+                    # Drop NaT values
+                    fire_data_copy = fire_data_copy.dropna(subset=[date_col])
+                    
+                    if len(fire_data_copy) > 0:
+                        # Group by date
+                        timeline = fire_data_copy.groupby(fire_data_copy[date_col].dt.date).size().reset_index()
+                        timeline.columns = ['Date', 'New Incidents']
+                        
+                        # Get last 14 days
+                        timeline = timeline.tail(14)
+                        
+                        fig2 = go.Figure()
+                        
+                        fig2.add_trace(go.Scatter(
+                            x=timeline['Date'],
+                            y=timeline['New Incidents'],
+                            name='New Incidents',
+                            line=dict(color='#dc3545', width=3),
+                            fill='tozeroy',
+                            fillcolor='rgba(220, 53, 69, 0.1)'
+                        ))
+                        
+                        fig2.update_layout(
+                            height=350,
+                            plot_bgcolor='#1e2128',
+                            paper_bgcolor='#1e2128',
+                            font=dict(color='#ffffff'),
+                            margin=dict(l=0, r=0, t=20, b=0),
+                            xaxis=dict(gridcolor='#2d3139', showgrid=True),
+                            yaxis=dict(title='Incidents', gridcolor='#2d3139', showgrid=True),
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                xanchor="right",
+                                x=1
+                            )
+                        )
+                        
+                        has_timeline = True
+                        st.plotly_chart(fig2, use_container_width=True)
+                except:
+                    pass
+        
+        if not has_timeline:
             # Sample timeline if no data
             dates = pd.date_range(end=datetime.now(), periods=14, freq='D')
             incidents = [1, 1, 2, 2, 3, 3, 4, 4, 4, 3, 3, 4, 5, 4]
@@ -487,8 +602,8 @@ def render_emergency_response_dashboard(fire_data):
                     x=1
                 )
             )
-        
-        st.plotly_chart(fig2, use_container_width=True)
+            
+            st.plotly_chart(fig2, use_container_width=True)
     
     # System Status Footer
     st.markdown("---")
