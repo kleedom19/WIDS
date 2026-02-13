@@ -1,21 +1,26 @@
 """
-landing_page.py — Multi-Role Landing Page
+landing_page.py — Secure Login with Role-Based Access
 
-Directs users to appropriate dashboards:
-- Emergency Response Personnel → Resource & Team Coordination
-- Evacuees & Caregivers → Evacuation Planning & Alerts
-- Data Analysts & Developers → Research & Analytics
+Authentication system for wildfire emergency response platform.
+Credentials determine dashboard access:
+- Emergency Response Personnel → Incident command features
+- Evacuees & Caregivers → Evacuation planning
+- Data Analysts → Research tools
 
 Author: 49ers Intelligence Lab
 Date: 2025-02-11
 """
 
 import streamlit as st
+import streamlit_authenticator as stauth
+import yaml
+from yaml.loader import SafeLoader
 
 
 def render_landing_page():
-    """Main landing page with role selection"""
+    """Secure login page with role-based authentication"""
     
+    # Custom CSS
     st.markdown("""
     <style>
         .hero-section {
@@ -26,38 +31,19 @@ def render_landing_page():
             border-radius: 10px;
             margin-bottom: 2rem;
         }
-        .role-card {
-            background: white;
+        .login-box {
+            max-width: 400px;
+            margin: 2rem auto;
             padding: 2rem;
+            background: white;
             border-radius: 10px;
-            border: 2px solid #e0e0e0;
-            transition: all 0.3s ease;
-            cursor: pointer;
-            height: 100%;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }
-        .role-card:hover {
-            border-color: #667eea;
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
-            transform: translateY(-2px);
-        }
-        .role-icon {
-            font-size: 3rem;
-            margin-bottom: 1rem;
-        }
-        .role-title {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #333;
-            margin-bottom: 0.5rem;
-        }
-        .role-description {
-            color: #666;
-            margin-bottom: 1rem;
-        }
-        .feature-list {
-            text-align: left;
-            color: #555;
-            font-size: 0.9rem;
+        .info-box {
+            background: #f0f2f6;
+            padding: 1rem;
+            border-radius: 8px;
+            margin: 1rem 0;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -67,123 +53,165 @@ def render_landing_page():
     <div class="hero-section">
         <h1>🔥 Wildfire Emergency Response Platform</h1>
         <p style="font-size: 1.2rem; margin-top: 1rem;">
-            Real-time coordination for emergency personnel, evacuees, and caregivers
+            Secure access for emergency personnel, evacuees, and analysts
         </p>
         <p style="font-size: 0.9rem; opacity: 0.9;">
-            Covering all 50 states, DC, Puerto Rico, U.S. Virgin Islands, Guam, American Samoa, and Northern Mariana Islands
+            56 territories | Real-time fire data | 2,847+ vulnerable counties
         </p>
     </div>
     """, unsafe_allow_html=True)
     
-    st.markdown("### Select Your Role")
+    # Login configuration
+    config = get_auth_config()
     
-    col1, col2, col3 = st.columns(3)
+    authenticator = stauth.Authenticate(
+        config['credentials'],
+        config['cookie']['name'],
+        config['cookie']['key'],
+        config['cookie']['expiry_days']
+    )
     
-    # Emergency Response Personnel
-    with col1:
-        st.markdown("""
-        <div class="role-card">
-            <div class="role-icon">🚒</div>
-            <div class="role-title">Emergency Response</div>
-            <div class="role-description">
-                For firefighters, incident commanders, and emergency coordinators
-            </div>
-            <div class="feature-list">
-                ✓ Team roster & resource management<br>
-                ✓ Real-time deployment assignments<br>
-                ✓ Equipment & water supply tracking<br>
-                ✓ Contact status monitoring<br>
-                ✓ Incident command dashboard
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    # Login widget
+    try:
+        # Newer versions return dict
+        authenticator.login(location='main')
         
-        if st.button("🚒 I'm Emergency Response Personnel", 
-                    type="primary", 
-                    use_container_width=True,
-                    key="btn_emergency"):
-            st.session_state.user_role = "emergency_response"
-            st.rerun()
+        # Access session state values
+        authentication_status = st.session_state.get('authentication_status')
+        name = st.session_state.get('name')
+        username = st.session_state.get('username')
+    except:
+        # Fallback for older versions
+        name, authentication_status, username = None, None, None
     
-    # Evacuees & Caregivers
-    with col2:
-        st.markdown("""
-        <div class="role-card">
-            <div class="role-icon">👨‍👩‍👧‍👦</div>
-            <div class="role-title">Evacuees & Caregivers</div>
-            <div class="role-description">
-                For individuals evacuating or caring for vulnerable family members
-            </div>
-            <div class="feature-list">
-                ✓ Personalized evacuation alerts<br>
-                ✓ Safe route planning & shelters<br>
-                ✓ Family contact confirmation<br>
-                ✓ Accessible transit options<br>
-                ✓ Real-time fire proximity warnings
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    if authentication_status:
+        # Successfully authenticated
+        authenticator.logout(location='sidebar')
         
-        if st.button("👨‍👩‍👧‍👦 I Need to Evacuate / Help Someone Evacuate", 
-                    type="primary", 
-                    use_container_width=True,
-                    key="btn_evacuee"):
-            st.session_state.user_role = "evacuee_caregiver"
-            st.rerun()
-    
-    # Data Analysts & Developers
-    with col3:
-        st.markdown("""
-        <div class="role-card">
-            <div class="role-icon">📊</div>
-            <div class="role-title">Research & Analytics</div>
-            <div class="role-description">
-                For data scientists, emergency planners, and policy analysts
-            </div>
-            <div class="feature-list">
-                ✓ Evacuation delay analysis<br>
-                ✓ Equity disparity metrics<br>
-                ✓ Predictive risk modeling<br>
-                ✓ Geographic vulnerability mapping<br>
-                ✓ Historical fire pattern analysis
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        # Get user's role from config
+        user_role = config['credentials']['usernames'][username]['role']
+        st.session_state.user_role = user_role
+        st.session_state.username = name
         
-        if st.button("📊 I'm a Data Analyst / Researcher", 
-                    type="primary", 
-                    use_container_width=True,
-                    key="btn_analyst"):
-            st.session_state.user_role = "data_analyst"
-            st.rerun()
+        # Welcome message
+        role_emoji = {
+            'emergency_response': '🚒',
+            'evacuee_caregiver': '👨‍👩‍👧‍👦',
+            'data_analyst': '📊'
+        }
+        
+        st.success(f"Welcome, {name}! {role_emoji.get(user_role, '')}")
+        
+        # Redirect to appropriate dashboard
+        st.rerun()
+        
+    elif authentication_status == False:
+        st.error('Username/password is incorrect')
+        show_demo_credentials()
+        
+    elif authentication_status == None:
+        st.warning('Please enter your username and password')
+        show_demo_credentials()
+
+
+def get_auth_config():
+    """
+    Authentication configuration with demo accounts.
     
-    # Platform info
-    st.markdown("---")
-    st.markdown("### Platform Capabilities")
+    In production, this would:
+    - Read from secure database (Supabase, Firebase)
+    - Integrate with agency CAD/RMS systems
+    - Use CJIS-compliant authentication
+    """
     
-    col_a, col_b, col_c, col_d = st.columns(4)
+    # Hash passwords using bcrypt
+    import bcrypt
     
-    col_a.metric("Coverage Area", "56 Territories", 
-                help="All 50 states + DC + 5 U.S. territories")
-    col_b.metric("Live Fire Data", "Real-time", 
-                help="NASA FIRMS + NIFC + local agencies")
-    col_c.metric("Vulnerable Counties", "2,847", 
-                help="CDC Social Vulnerability Index ≥ 0.75")
-    col_d.metric("Data Sources", "12+", 
-                help="Federal, state, and territorial agencies")
+    def hash_password(password):
+        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
     
-    st.markdown("---")
-    st.caption("""
-    **Built by:** 49ers Intelligence Lab, UNC Charlotte  
-    **For:** WiDS Datathon 2025  
-    **Data:** NASA FIRMS, NIFC, CDC SVI, FEMA, State DOTs, Territorial Emergency Management  
-    **License:** Open Source (Educational Use)
-    """)
+    config = {
+        'credentials': {
+            'usernames': {
+                'fire_captain': {
+                    'name': 'Captain Rodriguez',
+                    'password': hash_password('emergency2025'),
+                    'role': 'emergency_response',
+                    'agency': 'CAL FIRE'
+                },
+                'incident_commander': {
+                    'name': 'IC Thompson',
+                    'password': hash_password('incident2025'),
+                    'role': 'emergency_response',
+                    'agency': 'USFS'
+                },
+                'caregiver1': {
+                    'name': 'Maria Garcia',
+                    'password': hash_password('evacuate2025'),
+                    'role': 'evacuee_caregiver',
+                    'agency': 'Public'
+                },
+                'caregiver2': {
+                    'name': 'John Lee',
+                    'password': hash_password('evacuate2025'),
+                    'role': 'evacuee_caregiver',
+                    'agency': 'Public'
+                },
+                'analyst1': {
+                    'name': 'Dr. Sarah Chen',
+                    'password': hash_password('research2025'),
+                    'role': 'data_analyst',
+                    'agency': 'UNC Charlotte'
+                },
+                'demo': {
+                    'name': 'Demo User',
+                    'password': hash_password('demo2025'),
+                    'role': 'evacuee_caregiver',
+                    'agency': 'Public'
+                }
+            }
+        },
+        'cookie': {
+            'name': 'wildfire_auth_cookie',
+            'key': 'wids_secret_key_2025',  # In production: use secure random key
+            'expiry_days': 1
+        }
+    }
+    
+    return config
+
+
+def show_demo_credentials():
+    """Display demo credentials for testing"""
+    
+    with st.expander("🔓 Demo Credentials (For Testing Only)"):
+        st.markdown("""
+        ### Emergency Response Personnel
+        - **Username:** `fire_captain` | **Password:** `emergency2025`
+        - **Username:** `incident_commander` | **Password:** `incident2025`
+        
+        ### Evacuees & Caregivers
+        - **Username:** `caregiver1` | **Password:** `evacuate2025`
+        - **Username:** `demo` | **Password:** `demo2025`
+        
+        ### Data Analysts
+        - **Username:** `analyst1` | **Password:** `research2025`
+        
+        ---
+        
+        **Security Note:** In production deployment, this platform would integrate with:
+        - Agency CAD/RMS systems (Tyler, Motorola, Hexagon)
+        - CJIS-compliant authentication
+        - Multi-factor authentication (MFA)
+        - Role-based access control (RBAC) via Active Directory
+        
+        Personnel data shown in dashboards is synthetic for demonstration purposes.
+        """)
 
 
 if __name__ == "__main__":
     st.set_page_config(
-        page_title="Wildfire Emergency Response Platform",
+        page_title="Wildfire Emergency Response Platform - Login",
         page_icon="🔥",
         layout="wide"
     )

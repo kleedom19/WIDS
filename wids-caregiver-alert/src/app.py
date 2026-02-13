@@ -32,10 +32,7 @@ from us_territories_data import (
 
 # Try to import existing dashboards
 try:
-    from caregiver_dashboard_FINAL import (
-        load_vulnerable_populations,
-        load_wids_analysis_data
-    )
+    from caregiver_dashboard_FINAL import render_caregiver_dashboard
     CAREGIVER_AVAILABLE = True
 except:
     CAREGIVER_AVAILABLE = False
@@ -84,6 +81,7 @@ fire_data = load_fire_data()
 if st.session_state.user_role is None:
     # Show landing page
     render_landing_page()
+    st.stop()  # CRITICAL: Stop execution until logged in (fixes Streamlit Cloud issue)
 
 elif st.session_state.user_role == "emergency_response":
     # Emergency Response Dashboard
@@ -110,31 +108,22 @@ elif st.session_state.user_role == "emergency_response":
 elif st.session_state.user_role == "evacuee_caregiver":
     # Evacuee/Caregiver Dashboard
     
+    st.sidebar.markdown("---")
+    if st.sidebar.button("← Back to Home", use_container_width=True):
+        st.session_state.user_role = None
+        st.rerun()
+    
     if CAREGIVER_AVAILABLE:
         # Use existing comprehensive dashboard
-        st.sidebar.markdown("---")
-        if st.sidebar.button("← Back to Home", use_container_width=True):
-            st.session_state.user_role = None
-            st.rerun()
-        
-        # Import and run the full dashboard
-        # (This would be the caregiver_dashboard_FINAL.py content)
-        st.title("👨‍👩‍👧‍👦 Evacuation & Caregiver Dashboard")
-        st.info("Loading full evacuation planning interface...")
-        
-        # Merge territories into vulnerable populations
-        all_vulnerable = load_vulnerable_populations()
-        all_vulnerable.update(TERRITORY_VULNERABLE_POPULATIONS)
-        
-        st.success(f"Monitoring {len(all_vulnerable)} vulnerable locations across all U.S. states and territories")
-        
-    else:
+        try:
+            render_caregiver_dashboard(fire_data)
+        except Exception as e:
+            st.error(f"Error loading evacuation dashboard: {e}")
+            st.info("Using simplified evacuation interface...")
+            CAREGIVER_AVAILABLE = False
+    
+    if not CAREGIVER_AVAILABLE:
         # Fallback simplified version
-        st.sidebar.markdown("---")
-        if st.sidebar.button("← Back to Home", use_container_width=True):
-            st.session_state.user_role = None
-            st.rerun()
-        
         st.title("👨‍👩‍👧‍👦 Evacuation Planning Dashboard")
         st.markdown("### Find Safe Routes & Shelters")
         
